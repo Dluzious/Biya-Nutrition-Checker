@@ -80,6 +80,8 @@ export interface Bootstrap {
   labs: LabEntry[];
   vapidPublicKey: string;
   ai: { ready: boolean; model: string };
+  /** Waktu terakhir server memeriksa jadwal pengingat (ISO), null bila belum pernah. */
+  cronHeartbeat: string | null;
   serverTime: string;
 }
 

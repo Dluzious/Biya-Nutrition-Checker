@@ -152,6 +152,24 @@ function NotificationCard() {
   );
 }
 
+function ServerStatus({ heartbeat, serverTime }: { heartbeat: string | null; serverTime: string }) {
+  const ageMin = heartbeat ? Math.round((Date.parse(serverTime) - Date.parse(heartbeat)) / 60_000) : null;
+  if (ageMin !== null && ageMin <= 5) {
+    return (
+      <p className="small secondary" style={{ marginTop: -4 }}>
+        <span style={{ color: "var(--good-text)" }}>●</span> Server pengingat aktif (dicek {ageMin <= 1 ? "baru saja" : `${ageMin} menit lalu`}).
+      </p>
+    );
+  }
+  return (
+    <div className="banner warning">
+      <strong>Server pengingat belum berjalan</strong>
+      {ageMin === null ? "Belum pernah ada pengecekan jadwal." : `Pengecekan terakhir ${ageMin} menit lalu.`} Pengingat otomatis tidak akan terkirim
+      sampai ini aktif kembali.
+    </div>
+  );
+}
+
 type Draft = Omit<ScheduleItem, "id"> & { id?: string };
 
 function ScheduleSheet({ draft, onClose }: { draft: Draft; onClose: () => void }) {
@@ -312,6 +330,7 @@ export function SchedulePage() {
   return (
     <>
       <h1>Jadwal & Pengingat</h1>
+      <ServerStatus heartbeat={boot.cronHeartbeat} serverTime={boot.serverTime} />
       <NotificationCard />
 
       <div className="card">

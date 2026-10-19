@@ -11,6 +11,7 @@ import {
   getProduct,
   getProfile,
   getProfileMeta,
+  getSetting,
   getVapidKeys,
   listEvaluations,
   listIntakes,
@@ -213,7 +214,7 @@ route("PUT", "/api/me", async ({ env, req, me }) => {
 });
 
 route("GET", "/api/bootstrap", async ({ env, me }) => {
-  const [profile, profileMeta, members, products, schedule, weights, labs, vapid] = await Promise.all([
+  const [profile, profileMeta, members, products, schedule, weights, labs, vapid, cronHeartbeat] = await Promise.all([
     getProfile(env.DB),
     getProfileMeta(env.DB),
     listMembers(env.DB),
@@ -222,6 +223,7 @@ route("GET", "/api/bootstrap", async ({ env, me }) => {
     listWeights(env.DB),
     listLabs(env.DB),
     getVapidKeys(env.DB),
+    getSetting<string>(env.DB, "cron_heartbeat"),
   ]);
   return jsonResponse({
     me,
@@ -234,6 +236,7 @@ route("GET", "/api/bootstrap", async ({ env, me }) => {
     labs,
     vapidPublicKey: vapid.publicKey,
     ai: { ready: Boolean(env.ANTHROPIC_API_KEY), model: modelFor(env) },
+    cronHeartbeat,
     serverTime: new Date().toISOString(),
   });
 });

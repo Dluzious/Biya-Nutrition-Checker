@@ -4,6 +4,7 @@ import type { PushPrefs } from "../shared/types";
 import {
   getProfile,
   getSetting,
+  setSetting,
   getVapidKeys,
   listIntakes,
   listProducts,
@@ -64,6 +65,8 @@ const CATCH_UP_MINUTES = 10;
 
 /** Dijalankan cron setiap menit: pengingat jadwal, pengingat sekali, dan peringatan jadwal terlewat. */
 export async function runScheduledChecks(env: Env, now = new Date()) {
+  // Penanda bahwa cron berjalan; ditampilkan di menu Jadwal.
+  await setSetting(env.DB, "cron_heartbeat", now.toISOString(), null);
   const profile = await getProfile(env.DB);
   const tz = profile.timezone;
   const { date, minutes } = localParts(now, tz);
