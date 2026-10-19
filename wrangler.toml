@@ -16,7 +16,7 @@ crons = ["* * * * *"]
 [[d1_databases]]
 binding = "DB"
 database_name = "biya-nutrition"
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "77748fff-03c4-4606-83f2-6aaaeff4d6f0"
 migrations_dir = "migrations"
 
 [vars]
