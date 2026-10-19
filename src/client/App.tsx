@@ -55,9 +55,11 @@ function Login({ onLogin }: { onLogin: () => void }) {
 
   return (
     <form className="login" onSubmit={submit}>
-      <img src="/icons/icon-192.png" alt="" width={64} height={64} style={{ borderRadius: 16 }} />
-      <h1>Biya Nutrisi</h1>
-      <p className="secondary">Pemantau kecukupan nutrisi diet cair untuk keluarga.</p>
+      <div style={{ textAlign: "center", marginBottom: 16 }}>
+        <img src="/icons/icon-192.png" alt="" width={120} height={120} style={{ borderRadius: "50%", display: "block", margin: "0 auto 8px" }} />
+        <h1 style={{ marginBottom: 4 }}>Biya Nutrisi</h1>
+        <p className="secondary">Pemantau kecukupan nutrisi diet cair untuk keluarga.</p>
+      </div>
       {isIos() && !isStandalone() && (
         <div className="banner info small">
           Agar bisa menerima pengingat, pasang dulu: tombol <b>Bagikan</b> → <b>Tambahkan ke Layar Utama</b>, lalu buka dari ikon itu dan
