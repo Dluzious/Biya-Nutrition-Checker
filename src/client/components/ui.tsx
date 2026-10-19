@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState, type ButtonHTMLAttributes, type ReactNode } from "react";
 import { adequacyStatus, STATUS_LABEL, type AdequacyStatus } from "../../shared/intake";
 
 export const fmt = (n: number | null | undefined, digits = 0) =>
@@ -248,13 +248,80 @@ export function NumberInput({
   );
 }
 
-export function Field({ label, children, hint }: { label: string; children: ReactNode; hint?: ReactNode }) {
+/**
+ * Kolom isian. `required` memberi tanda * merah; `error` (mis. "Wajib diisi")
+ * memberi garis merah dan pesan di bawah kolom.
+ */
+export function Field({
+  label,
+  children,
+  hint,
+  required,
+  error,
+  id,
+}: {
+  label: string;
+  children: ReactNode;
+  hint?: ReactNode;
+  required?: boolean;
+  error?: string | null;
+  id?: string;
+}) {
   return (
-    <label className="field">
-      <span>{label}</span>
+    <label id={id} className={`field${error ? " invalid" : ""}`}>
+      <span>
+        {label}
+        {required && (
+          <span className="req" aria-label="wajib">
+            *
+          </span>
+        )}
+      </span>
       {children}
-      {hint && <div className="tiny muted" style={{ marginTop: 4 }}>{hint}</div>}
+      {error && (
+        <div className="field-error" role="alert">
+          {error}
+        </div>
+      )}
+      {hint && !error && <div className="tiny muted" style={{ marginTop: 4 }}>{hint}</div>}
     </label>
+  );
+}
+
+/** Pesan bila angka di luar rentang wajar (null bila kosong atau valid). */
+export const rangeError = (value: number | null | undefined, min: number, max: number, unit = "") =>
+  value === null || value === undefined || (value >= min && value <= max)
+    ? null
+    : `Harus antara ${min.toLocaleString("id-ID")}–${max.toLocaleString("id-ID")}${unit ? ` ${unit}` : ""}`;
+
+/** Pesan untuk kolom wajib yang kosong. */
+export const requiredError = (value: unknown, message = "Wajib diisi") =>
+  value === null || value === undefined || (typeof value === "string" && value.trim() === "") ? message : null;
+
+/**
+ * Tombol aksi: berdenyut saat `attention`, menampilkan putaran + `busyText`
+ * saat `busy`, dan tidak bisa ditekan dua kali.
+ */
+export function ActionButton({
+  busy,
+  busyText = "Menyimpan…",
+  attention,
+  className = "btn primary",
+  children,
+  disabled,
+  ...rest
+}: ButtonHTMLAttributes<HTMLButtonElement> & { busy?: boolean; busyText?: string; attention?: boolean }) {
+  const cls = [className, attention && !busy ? "attention" : "", busy ? "busy" : ""].filter(Boolean).join(" ");
+  return (
+    <button {...rest} className={cls} disabled={disabled || busy} aria-busy={busy || undefined}>
+      {busy ? (
+        <>
+          <Spinner /> {busyText}
+        </>
+      ) : (
+        children
+      )}
+    </button>
   );
 }
 

@@ -199,6 +199,41 @@ p {
   font-weight: 600;
   cursor: pointer;
   text-decoration: none;
+  transition:
+    transform 0.12s ease,
+    filter 0.12s ease,
+    opacity 0.2s ease;
+}
+
+/* Efek tertekan saat disentuh. */
+.btn:not(:disabled):active,
+.chip:active,
+.segmented button:active {
+  transform: scale(0.96);
+  filter: brightness(0.92);
+}
+
+/* Tombol yang sedang menunggu diklik (mis. ada perubahan belum disimpan). */
+.btn.attention:not(:disabled) {
+  animation: attention-pulse 1.8s ease-out infinite;
+}
+
+@keyframes attention-pulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 55%, transparent);
+  }
+  70% {
+    box-shadow: 0 0 0 10px color-mix(in srgb, var(--accent) 0%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent);
+  }
+}
+
+/* Sedang diproses: tetap terbaca, tidak bisa ditekan lagi. */
+.btn.busy {
+  cursor: progress;
+  opacity: 0.85 !important;
 }
 
 .btn:disabled {
@@ -551,6 +586,7 @@ table.nutrients th:first-child {
 }
 
 .tabbar button {
+  position: relative;
   flex: 1;
   height: var(--tabbar-h);
   border: 0;
@@ -645,24 +681,102 @@ table.nutrients th:first-child {
 }
 
 /* Toast */
+/* Notifikasi hasil, muncul di atas layar agar tidak menutupi tombol. */
 .toast {
   position: fixed;
   left: 50%;
-  bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 16px);
+  top: calc(env(safe-area-inset-top) + 12px);
   transform: translateX(-50%);
   z-index: 60;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: max-content;
+  max-width: min(520px, calc(100% - 32px));
   background: var(--ink);
   color: var(--page);
-  padding: 10px 16px;
-  border-radius: 12px;
-  font-size: 0.9rem;
-  max-width: calc(100% - 32px);
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.2);
+  padding: 12px 16px;
+  border-radius: 14px;
+  font-size: 0.95rem;
+  font-weight: 500;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+  animation: toast-in 0.25s ease-out;
+}
+
+.toast .toast-icon {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 0.8rem;
+  font-weight: 700;
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.toast.success {
+  background: #0b7a0b;
+  color: #fff;
 }
 
 .toast.error {
   background: var(--critical);
   color: #fff;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -12px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+/* Data wajib yang belum diisi */
+.req {
+  color: var(--critical);
+  font-weight: 700;
+  margin-left: 2px;
+}
+
+label.field.invalid input,
+label.field.invalid select,
+label.field.invalid textarea,
+.invalid-box {
+  border-color: var(--critical) !important;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--critical) 18%, transparent);
+}
+
+.field-error {
+  color: var(--critical);
+  font-size: 0.8rem;
+  font-weight: 600;
+  margin-top: 4px;
+}
+
+.tab-dot {
+  position: absolute;
+  top: 8px;
+  right: calc(50% - 18px);
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--critical);
+  border: 2px solid var(--surface);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .btn,
+  .btn.attention:not(:disabled),
+  .toast,
+  .spinner {
+    animation: none !important;
+    transition: none !important;
+  }
 }
 
 /* Charts */
@@ -795,4 +909,8 @@ details > summary {
   height: 1px;
   background: var(--hairline);
   margin: 12px 0;
+}
+
+.invalid-group input {
+  border-color: var(--critical) !important;
 }

@@ -2,8 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import type { TargetLine } from "../../shared/targets";
 import { LAB_FIELDS, type LabKey, type PatientProfile, type Role } from "../../shared/types";
 import { api } from "../api";
-import { Field, NumberInput, Segmented, fmt, fmtDate, fmtDateTime } from "../components/ui";
-import { useApp } from "../store";
+import { ActionButton, Field, NumberInput, Segmented, fmt, fmtDate, fmtDateTime, rangeError, requiredError } from "../components/ui";
+import { missingPatientData, refeedingNeedsStartDate, scrollToField } from "../completeness";
+import { useAction, useApp } from "../store";
 
 const SOURCE_LABEL = { dokter: "dari dokter", rumus: "dari rumus", batasan: "batasan dokter" } as const;
 const REFEEDING_LABEL = { rendah: "Rendah", sedang: "Sedang", tinggi: "Tinggi", sangat_tinggi: "Sangat tinggi" } as const;
@@ -98,7 +99,8 @@ function TargetsCard() {
 }
 
 function ProfileForm() {
-  const { boot, run } = useApp();
+  const { boot, targets, toast } = useApp();
+  const [saving, exec] = useAction();
   const [p, setP] = useState<PatientProfile>(boot.profile);
   const dirty = JSON.stringify(p) !== JSON.stringify(boot.profile);
   // Ikuti perubahan dari HP lain selama form ini belum diedit di HP ini.
@@ -116,7 +118,40 @@ function ProfileForm() {
   const setF = <K extends keyof PatientProfile["factorOverrides"]>(k: K, v: PatientProfile["factorOverrides"][K]) =>
     setP({ ...p, factorOverrides: { ...p.factorOverrides, [k]: v } });
 
-  const save = () => run(() => api("/api/profile", { method: "PUT", body: p }), "Data pasien disimpan");
+  // Merah = wajib diisi atau angkanya di luar rentang wajar.
+  const errors = {
+    name: requiredError(p.name, "Isi nama pasien"),
+    age: requiredError(p.age, "Isi usia — dipakai untuk target cairan & AKG") ?? rangeError(p.age, 1, 120, "tahun"),
+    height: requiredError(p.heightCm, "Isi tinggi badan — dipakai untuk IMT") ?? rangeError(p.heightCm, 80, 230, "cm"),
+    usualWeight: rangeError(p.usualWeightKg, 20, 250, "kg"),
+    maxVolume: rangeError(p.maxVolumePerSittingMl, 20, 1000, "ml"),
+    fluidRestriction: rangeError(p.conditions.fluidRestrictionMl, 300, 6000, "ml"),
+    lowIntakeDays: rangeError(p.conditions.lowIntakeDays, 0, 365, "hari"),
+    startDate:
+      refeedingNeedsStartDate({ ...boot, profile: p }, targets) ? "Wajib diisi karena risiko refeeding tinggi" : null,
+    energy: rangeError(p.doctorTargets.energyKcal, 200, 5000, "kkal"),
+    protein: rangeError(p.doctorTargets.proteinG, 5, 300, "g"),
+    fluid: rangeError(p.doctorTargets.fluidMl, 300, 6000, "ml"),
+    kcalPerKg: rangeError(p.factorOverrides.kcalPerKg, 5, 50),
+    proteinPerKg: rangeError(p.factorOverrides.proteinPerKg, 0.3, 3),
+  };
+  // Angka di luar rentang ditolak server; kolom wajib yang kosong tetap boleh disimpan sebagian.
+  const blocking = Object.entries(errors).filter(
+    ([k, v]) => v && !["name", "startDate"].includes(k) && !(k === "age" && p.age === null) && !(k === "height" && p.heightCm === null),
+  );
+  const incomplete = Object.values(errors).some(Boolean);
+
+  const save = async () => {
+    if (blocking.length) {
+      toast("Perbaiki angka yang ditandai merah dulu.", "error");
+      return;
+    }
+    const ok = await exec(
+      () => api("/api/profile", { method: "PUT", body: p }),
+      incomplete ? "Tersimpan — masih ada data wajib yang kosong (tanda merah)" : "Data pasien disimpan",
+    );
+    return ok;
+  };
 
   return (
     <div className="card">
@@ -129,7 +164,7 @@ function ProfileForm() {
           {boot.profileMeta.updatedByName ? ` oleh ${boot.profileMeta.updatedByName}` : ""}
         </p>
       )}
-      <Field label="Nama pasien">
+      <Field label="Nama pasien" id="field-name" required error={errors.name}>
         <input type="text" value={p.name} onChange={(e) => set("name", e.target.value)} />
       </Field>
       <Field label="Diagnosis">
@@ -139,14 +174,14 @@ function ProfileForm() {
         <input type="text" value={p.dietOrder} onChange={(e) => set("dietOrder", e.target.value)} />
       </Field>
       <div className="grid-2">
-        <Field label="Usia (tahun)">
+        <Field label="Usia (tahun)" id="field-age" required error={errors.age}>
           <NumberInput value={p.age} onChange={(v) => set("age", v === null ? null : Math.round(v))} />
         </Field>
-        <Field label="Tinggi badan (cm)">
+        <Field label="Tinggi badan (cm)" id="field-height" required error={errors.height}>
           <NumberInput value={p.heightCm} onChange={(v) => set("heightCm", v)} />
         </Field>
       </div>
-      <Field label="BB biasa sebelum sakit (kg)" hint="Untuk menghitung persentase penurunan berat badan.">
+      <Field label="BB biasa sebelum sakit (kg)" error={errors.usualWeight} hint="Untuk menghitung persentase penurunan berat badan.">
         <NumberInput value={p.usualWeightKg} onChange={(v) => set("usualWeightKg", v)} />
       </Field>
       <Field label="Aktivitas sehari-hari">
@@ -160,7 +195,7 @@ function ProfileForm() {
           ]}
         />
       </Field>
-      <Field label="Volume maksimal sekali minum (ml)" hint="Berapa banyak yang sanggup diminum tanpa mual/begah.">
+      <Field label="Volume maksimal sekali minum (ml)" error={errors.maxVolume} hint="Berapa banyak yang sanggup diminum tanpa mual/begah.">
         <NumberInput value={p.maxVolumePerSittingMl} onChange={(v) => set("maxVolumePerSittingMl", v)} />
       </Field>
 
@@ -176,7 +211,7 @@ function ProfileForm() {
         <input type="checkbox" checked={p.conditions.diabetes} onChange={(e) => setC("diabetes", e.target.checked)} />
         <span>Diabetes / gula darah tinggi</span>
       </label>
-      <Field label="Batas cairan dari dokter (ml/hari)" hint="Isi bila ada bengkak, cairan di perut, atau gangguan jantung.">
+      <Field label="Batas cairan dari dokter (ml/hari)" error={errors.fluidRestriction} hint="Isi bila ada bengkak, cairan di perut, atau gangguan jantung.">
         <NumberInput value={p.conditions.fluidRestrictionMl} onChange={(v) => setC("fluidRestrictionMl", v)} placeholder="tidak ada" />
       </Field>
       <Field label="Terapi yang sedang dijalani">
@@ -192,14 +227,20 @@ function ProfileForm() {
       </Field>
 
       <h3>Risiko refeeding</h3>
-      <Field label="Berapa hari makan/minum sangat sedikit sebelum nutrisi dimulai?">
+      <Field label="Berapa hari makan/minum sangat sedikit sebelum nutrisi dimulai?" error={errors.lowIntakeDays}>
         <NumberInput
           value={p.conditions.lowIntakeDays}
           onChange={(v) => setC("lowIntakeDays", v === null ? null : Math.round(v))}
           placeholder="0"
         />
       </Field>
-      <Field label="Tanggal mulai nutrisi penuh" hint="Untuk menaikkan target bertahap bila risikonya tinggi.">
+      <Field
+        label="Tanggal mulai nutrisi penuh"
+        id="field-startdate"
+        required={Boolean(errors.startDate)}
+        error={errors.startDate}
+        hint="Untuk menaikkan target bertahap bila risikonya tinggi."
+      >
         <input
           type="date"
           value={p.conditions.nutritionStartDate ?? ""}
@@ -223,14 +264,14 @@ function ProfileForm() {
       <h3>Target dari dokter / ahli gizi</h3>
       <p className="tiny muted">Bila diisi, menggantikan hasil rumus.</p>
       <div className="grid-2">
-        <Field label="Energi (kkal/hari)">
+        <Field label="Energi (kkal/hari)" error={errors.energy}>
           <NumberInput value={p.doctorTargets.energyKcal} onChange={(v) => setD("energyKcal", v)} />
         </Field>
-        <Field label="Protein (g/hari)">
+        <Field label="Protein (g/hari)" error={errors.protein}>
           <NumberInput value={p.doctorTargets.proteinG} onChange={(v) => setD("proteinG", v)} />
         </Field>
       </div>
-      <Field label="Cairan (ml/hari)">
+      <Field label="Cairan (ml/hari)" error={errors.fluid}>
         <NumberInput value={p.doctorTargets.fluidMl} onChange={(v) => setD("fluidMl", v)} />
       </Field>
       <Field label="Catatan dokter">
@@ -240,10 +281,10 @@ function ProfileForm() {
       <details>
         <summary>Pengaturan lanjutan</summary>
         <div className="grid-2" style={{ marginTop: 8 }}>
-          <Field label="Faktor energi (kkal/kg)" hint="Kosong = otomatis 25–30">
+          <Field label="Faktor energi (kkal/kg)" error={errors.kcalPerKg} hint="Kosong = otomatis 25–30">
             <NumberInput value={p.factorOverrides.kcalPerKg} onChange={(v) => setF("kcalPerKg", v)} />
           </Field>
-          <Field label="Faktor protein (g/kg)" hint="Kosong = otomatis">
+          <Field label="Faktor protein (g/kg)" error={errors.proteinPerKg} hint="Kosong = otomatis">
             <NumberInput value={p.factorOverrides.proteinPerKg} onChange={(v) => setF("proteinPerKg", v)} />
           </Field>
         </div>
@@ -256,42 +297,73 @@ function ProfileForm() {
         </Field>
       </details>
 
-      <button
+      {blocking.length > 0 && <p className="field-error">Ada angka di luar rentang wajar (tanda merah).</p>}
+      <ActionButton
         className="btn primary block"
         style={{
           marginTop: 12,
           ...(dirty ? { position: "sticky", bottom: "calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 8px)", zIndex: 5 } : {}),
         }}
+        busy={saving}
+        attention={dirty && blocking.length === 0}
         disabled={!dirty}
         onClick={save}
       >
-        {dirty ? "Simpan perubahan" : "Tersimpan"}
-      </button>
+        {dirty ? "Simpan perubahan" : "Tersimpan ✓"}
+      </ActionButton>
     </div>
   );
 }
 
 function WeightsCard() {
-  const { boot, todayDate, run } = useApp();
+  const { boot, todayDate, run, toast } = useApp();
+  const [saving, exec] = useAction();
   const [date, setDate] = useState(todayDate);
   const [kg, setKg] = useState<number | null>(null);
-  const add = async () => {
-    if (!kg) return;
-    const ok = await run(() => api("/api/weights", { body: { date, kg } }), "Berat badan tercatat");
-    if (ok) setKg(null);
+  const [tried, setTried] = useState(false);
+  const errors = {
+    date: requiredError(date, "Isi tanggal"),
+    kg: requiredError(kg, "Isi berat (kg)") ?? rangeError(kg, 20, 250, "kg"),
   };
+  const valid = !errors.date && !errors.kg;
+  const add = async () => {
+    setTried(true);
+    if (!valid) {
+      toast("Lengkapi data yang ditandai merah dulu.", "error");
+      return;
+    }
+    const ok = await exec(() => api("/api/weights", { body: { date, kg } }), "Berat badan tercatat");
+    if (ok) {
+      setKg(null);
+      setTried(false);
+    }
+  };
+  const noWeight = boot.weights.length === 0;
   return (
-    <div className="card">
-      <h2>Berat badan</h2>
+    <div className="card" id="card-weights">
+      <h2>
+        Berat badan{noWeight && <span className="req">*</span>}
+      </h2>
+      {noWeight && (
+        <p className="field-error" role="alert" style={{ marginBottom: 8 }}>
+          Wajib: belum ada catatan berat badan, jadi target kalori & protein belum bisa dihitung.
+        </p>
+      )}
       <p className="small muted">Timbang 1–2 kali seminggu, pagi hari sebelum minum. Boleh juga isi BB lama (1–6 bulan lalu).</p>
-      <div className="row">
-        <input type="date" value={date} max={todayDate} onChange={(e) => setDate(e.target.value)} style={{ flex: 1.2 }} />
-        <div style={{ flex: 1 }}>
-          <NumberInput value={kg} onChange={setKg} placeholder="kg" />
+      <div className="row" style={{ alignItems: "flex-start" }}>
+        <div style={{ flex: 1.2 }}>
+          <Field label="Tanggal" error={tried ? errors.date : null}>
+            <input type="date" value={date} max={todayDate} onChange={(e) => setDate(e.target.value)} />
+          </Field>
         </div>
-        <button className="btn primary" disabled={!kg} onClick={add}>
+        <div style={{ flex: 1 }}>
+          <Field label="Berat (kg)" required error={tried || kg !== null ? errors.kg : null}>
+            <NumberInput value={kg} onChange={setKg} placeholder="kg" />
+          </Field>
+        </div>
+        <ActionButton className="btn primary" style={{ marginTop: 26 }} busy={saving} busyText="" attention={valid} onClick={add} aria-label="Tambah berat badan">
           +
-        </button>
+        </ActionButton>
       </div>
       {boot.weights.length > 0 && (
         <ul className="list" style={{ marginTop: 8 }}>
@@ -302,7 +374,10 @@ function WeightsCard() {
               <button
                 className="btn ghost small"
                 aria-label="Hapus"
-                onClick={() => confirm("Hapus catatan berat ini?") && run(() => api(`/api/weights/${w.id}`, { method: "DELETE" }))}
+                onClick={() =>
+                  confirm("Hapus catatan berat ini?") &&
+                  run(() => api(`/api/weights/${w.id}`, { method: "DELETE" }), "Catatan berat dihapus", "Gagal menghapus")
+                }
               >
                 ✕
               </button>
@@ -315,17 +390,28 @@ function WeightsCard() {
 }
 
 function LabsCard() {
-  const { boot, todayDate, run } = useApp();
+  const { boot, todayDate, run, toast } = useApp();
+  const [saving, exec] = useAction();
   const [open, setOpen] = useState(false);
   const [date, setDate] = useState(todayDate);
   const [values, setValues] = useState<Partial<Record<LabKey, number>>>({});
+  const [tried, setTried] = useState(false);
+  const clean = Object.fromEntries(Object.entries(values).filter(([, v]) => v !== null && v !== undefined));
+  const errors = {
+    date: requiredError(date, "Isi tanggal pemeriksaan"),
+    values: Object.keys(clean).length === 0 ? "Isi minimal satu hasil lab" : null,
+  };
   const add = async () => {
-    const clean = Object.fromEntries(Object.entries(values).filter(([, v]) => v !== null && v !== undefined));
-    if (!Object.keys(clean).length) return;
-    const ok = await run(() => api("/api/labs", { body: { date, values: clean } }), "Hasil lab tersimpan");
+    setTried(true);
+    if (errors.date || errors.values) {
+      toast("Lengkapi data yang ditandai merah dulu.", "error");
+      return;
+    }
+    const ok = await exec(() => api("/api/labs", { body: { date, values: clean } }), "Hasil lab tersimpan");
     if (ok) {
       setValues({});
       setOpen(false);
+      setTried(false);
     }
   };
   return (
@@ -338,10 +424,15 @@ function LabsCard() {
       </div>
       {open && (
         <>
-          <Field label="Tanggal pemeriksaan">
+          <Field label="Tanggal pemeriksaan" required error={tried ? errors.date : null}>
             <input type="date" value={date} max={todayDate} onChange={(e) => setDate(e.target.value)} />
           </Field>
-          <div className="grid-2">
+          {tried && errors.values && (
+            <p className="field-error" role="alert">
+              {errors.values}
+            </p>
+          )}
+          <div className={`grid-2${tried && errors.values ? " invalid-group" : ""}`}>
             {LAB_FIELDS.map((f) => (
               <Field key={f.key} label={`${f.label} (${f.unit})`}>
                 <NumberInput
@@ -351,9 +442,9 @@ function LabsCard() {
               </Field>
             ))}
           </div>
-          <button className="btn primary block" onClick={add}>
-            Simpan
-          </button>
+          <ActionButton className="btn primary block" busy={saving} attention={!errors.values} onClick={add}>
+            Simpan hasil lab
+          </ActionButton>
         </>
       )}
       {boot.labs.length === 0 && !open && <div className="empty">Belum ada. Kalium, fosfat, dan magnesium penting untuk menilai risiko refeeding.</div>}
@@ -364,7 +455,10 @@ function LabsCard() {
             <button
               className="btn ghost small"
               aria-label="Hapus"
-              onClick={() => confirm("Hapus hasil lab ini?") && run(() => api(`/api/labs/${l.id}`, { method: "DELETE" }))}
+              onClick={() =>
+                confirm("Hapus hasil lab ini?") &&
+                run(() => api(`/api/labs/${l.id}`, { method: "DELETE" }), "Hasil lab dihapus", "Gagal menghapus")
+              }
             >
               ✕
             </button>
@@ -381,7 +475,8 @@ function LabsCard() {
 }
 
 function AccountCard() {
-  const { boot, run, logout } = useApp();
+  const { boot, logout } = useApp();
+  const [saving, exec] = useAction();
   const [name, setName] = useState(boot.me.name);
   const [role, setRole] = useState<Role>(boot.me.role);
   return (
@@ -400,7 +495,7 @@ function AccountCard() {
       </ul>
       <p className="tiny muted">Anggota lain cukup membuka alamat aplikasi yang sama dan masuk dengan kata sandi keluarga.</p>
       <div className="divider" />
-      <Field label="Nama Anda">
+      <Field label="Nama Anda" required error={requiredError(name, "Isi nama Anda")}>
         <input type="text" value={name} onChange={(e) => setName(e.target.value)} />
       </Field>
       <Field label="Peran">
@@ -414,16 +509,37 @@ function AccountCard() {
         />
       </Field>
       <div className="row">
-        <button
-          className="btn grow"
-          disabled={name.trim() === boot.me.name && role === boot.me.role}
-          onClick={() => run(() => api("/api/me", { method: "PUT", body: { name: name.trim(), role } }), "Tersimpan")}
+        <ActionButton
+          className="btn primary grow"
+          busy={saving}
+          attention={Boolean(name.trim()) && (name.trim() !== boot.me.name || role !== boot.me.role)}
+          disabled={!name.trim() || (name.trim() === boot.me.name && role === boot.me.role)}
+          onClick={() => exec(() => api("/api/me", { method: "PUT", body: { name: name.trim(), role } }), "Akun Anda disimpan")}
         >
           Simpan
-        </button>
+        </ActionButton>
         <button className="btn danger" onClick={() => confirm("Keluar dari aplikasi di HP ini?") && logout()}>
           Keluar
         </button>
+      </div>
+    </div>
+  );
+}
+
+function MissingDataBanner() {
+  const { boot, targets } = useApp();
+  const missing = missingPatientData(boot, targets);
+  if (!missing.length) return null;
+  return (
+    <div className="banner critical" role="alert">
+      <strong>Data wajib belum lengkap ({missing.length})</strong>
+      Ketuk untuk langsung ke kolomnya:
+      <div className="chips" style={{ marginTop: 8 }}>
+        {missing.map((m) => (
+          <button key={m.id} type="button" className="chip" onClick={() => scrollToField(m.id)}>
+            {m.label}
+          </button>
+        ))}
       </div>
     </div>
   );
@@ -433,6 +549,7 @@ export function PatientPage() {
   return (
     <>
       <h1>Pasien</h1>
+      <MissingDataBanner />
       <TargetsCard />
       <WeightsCard />
       <ProfileForm />

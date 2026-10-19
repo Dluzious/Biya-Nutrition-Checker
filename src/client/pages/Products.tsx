@@ -2,9 +2,9 @@ import { useRef, useState } from "react";
 import { NUTRIENTS, type NutrientKey, type NutrientMap } from "../../shared/nutrients";
 import type { Product } from "../../shared/types";
 import { api } from "../api";
-import { ConfirmDialog, Field, NumberInput, Segmented, Sheet, Spinner, fmt } from "../components/ui";
+import { ActionButton, ConfirmDialog, Field, NumberInput, Segmented, Sheet, fmt, rangeError, requiredError } from "../components/ui";
 import { prepareImage, type PreparedImage } from "../image";
-import { useApp } from "../store";
+import { useAction, useApp } from "../store";
 
 type ProductDraft = Omit<Product, "id" | "updatedAt"> & { id?: string };
 
@@ -47,8 +47,23 @@ function ProductEditor({
   confidence?: AiDraft["confidence"];
   onClose: () => void;
 }) {
-  const { run } = useApp();
+  const { toast } = useApp();
+  const [saving, exec] = useAction();
+  const [removing, execRemove] = useAction();
   const [p, setP] = useState(initial);
+  // Wajib: nama, energi, protein, dan volume siap minum untuk produk cair.
+  const errors: Record<string, string | null> = {
+    name: requiredError(p.name, "Isi nama produk"),
+    servingVolumeMl:
+      p.form === "cair"
+        ? (requiredError(p.servingVolumeMl, "Isi volume 1 takaran saji (ml)") ?? rangeError(p.servingVolumeMl, 1, 2000, "ml"))
+        : rangeError(p.servingVolumeMl, 1, 2000, "ml"),
+    servingGrams: rangeError(p.servingGrams, 1, 1000, "g"),
+    energy_kcal: requiredError(p.nutrients.energy_kcal, "Isi energi per takaran saji"),
+    protein_g: requiredError(p.nutrients.protein_g, "Isi protein per takaran saji"),
+  };
+  const valid = Object.values(errors).every((e) => !e);
+  const REQUIRED_NUTRIENTS: string[] = ["energy_kcal", "protein_g"];
   const setNutrient = (key: NutrientKey, v: number | null) => {
     const next = { ...p.nutrients };
     if (v === null) delete next[key];
@@ -57,24 +72,32 @@ function ProductEditor({
   };
 
   const save = async () => {
-    if (!p.name.trim()) return;
+    if (!valid) {
+      toast("Lengkapi data yang ditandai merah dulu.", "error");
+      return;
+    }
     const { id, ...body } = p;
-    const ok = await run(
+    const ok = await exec(
       () => (id ? api(`/api/products/${id}`, { method: "PUT", body }) : api("/api/products", { body })),
-      "Produk disimpan",
+      `Produk “${p.name.trim()}” disimpan`,
     );
     if (ok) onClose();
   };
 
   const remove = async () => {
     if (!p.id || !confirm(`Hapus ${p.name}? Riwayat minum tetap tersimpan.`)) return;
-    const ok = await run(() => api(`/api/products/${p.id}`, { method: "DELETE" }), "Produk dihapus");
+    const ok = await execRemove(() => api(`/api/products/${p.id}`, { method: "DELETE" }), "Produk dihapus", "Gagal menghapus");
     if (ok) onClose();
   };
 
   const group = (g: "makro" | "vitamin" | "mineral") =>
     NUTRIENTS.filter((n) => n.group === g).map((n) => (
-      <Field key={n.key} label={`${n.label} (${n.unit})`}>
+      <Field
+        key={n.key}
+        label={`${n.label} (${n.unit})`}
+        required={REQUIRED_NUTRIENTS.includes(n.key)}
+        error={errors[n.key] ?? null}
+      >
         <NumberInput value={p.nutrients[n.key as NutrientKey] ?? null} onChange={(v) => setNutrient(n.key as NutrientKey, v)} />
       </Field>
     ));
@@ -95,7 +118,7 @@ function ProductEditor({
           )}
         </div>
       )}
-      <Field label="Nama produk">
+      <Field label="Nama produk" required error={errors.name}>
         <input type="text" value={p.name} placeholder="mis. Fresubin 2 kcal Vanilla" onChange={(e) => setP({ ...p, name: e.target.value })} />
       </Field>
       <Field label="Merek / produsen">
@@ -116,10 +139,15 @@ function ProductEditor({
         <input type="text" value={p.servingLabel} placeholder="mis. 1 botol 200 ml / 6 sendok takar" onChange={(e) => setP({ ...p, servingLabel: e.target.value })} />
       </Field>
       <div className="grid-2">
-        <Field label="Volume siap minum (ml)" hint={p.form === "bubuk" ? "Setelah dilarutkan" : undefined}>
+        <Field
+          label="Volume siap minum (ml)"
+          required={p.form === "cair"}
+          error={errors.servingVolumeMl}
+          hint={p.form === "bubuk" ? "Setelah dilarutkan; diisi agar bisa dicatat per ml" : undefined}
+        >
           <NumberInput value={p.servingVolumeMl} onChange={(v) => setP({ ...p, servingVolumeMl: v })} />
         </Field>
-        <Field label="Berat bubuk (g)">
+        <Field label="Berat bubuk (g)" error={errors.servingGrams}>
           <NumberInput value={p.servingGrams} onChange={(v) => setP({ ...p, servingGrams: v })} />
         </Field>
       </div>
@@ -145,14 +173,15 @@ function ProductEditor({
         <input type="checkbox" checked={p.active} onChange={(e) => setP({ ...p, active: e.target.checked })} />
         <span>Sedang dipakai (tampil saat mencatat minum)</span>
       </label>
+      {!valid && <p className="field-error">Lengkapi data yang ditandai merah.</p>}
       <div className="row" style={{ marginTop: 8 }}>
-        <button className="btn primary grow" disabled={!p.name.trim()} onClick={save}>
+        <ActionButton className="btn primary grow" busy={saving} attention={valid} onClick={save}>
           Simpan
-        </button>
+        </ActionButton>
         {p.id && (
-          <button className="btn danger" onClick={remove}>
+          <ActionButton className="btn danger" busy={removing} busyText="Menghapus…" onClick={remove}>
             Hapus
-          </button>
+          </ActionButton>
         )}
       </div>
     </Sheet>
@@ -173,12 +202,16 @@ function PhotoSheet({ onDraft, onClose }: { onDraft: (d: AiDraft) => void; onClo
       const prepared = await Promise.all([...files].slice(0, 4 - images.length).map(prepareImage));
       setImages([...images, ...prepared].slice(0, 4));
     } catch (e) {
-      toast((e as Error).message, "error");
+      toast(`Foto gagal diproses: ${(e as Error).message}`, "error");
     }
     setBusy(null);
   };
 
   const read = async () => {
+    if (!images.length) {
+      toast("Tambahkan minimal 1 foto label dulu.", "error");
+      return;
+    }
     setBusy("ai");
     try {
       const { draft } = await api<{ draft: AiDraft }>("/api/ai/label", {
@@ -187,10 +220,11 @@ function PhotoSheet({ onDraft, onClose }: { onDraft: (d: AiDraft) => void; onClo
       if (!draft.isNutritionLabel) {
         toast("Tabel nilai gizi tidak terlihat di foto. Foto bagian belakang kemasan.", "error");
       } else {
+        toast("Label berhasil dibaca — periksa angkanya lalu simpan", "success");
         onDraft(draft);
       }
     } catch (e) {
-      toast((e as Error).message, "error");
+      toast(`Gagal membaca label: ${(e as Error).message}`, "error");
     }
     setBusy(null);
   };
@@ -223,19 +257,28 @@ function PhotoSheet({ onDraft, onClose }: { onDraft: (d: AiDraft) => void; onClo
       {images.length > 0 && <p className="tiny muted">Ketuk foto untuk menghapus.</p>}
       <div className="stack">
         {images.length < 4 && (
-          <button className="btn block" disabled={busy !== null} onClick={() => input.current?.click()}>
-            {busy === "prep" ? <Spinner /> : images.length ? "+ Tambah foto" : "Ambil / pilih foto"}
-          </button>
+          <ActionButton
+            className={`btn block${images.length ? "" : " primary"}`}
+            busy={busy === "prep"}
+            busyText="Memproses foto…"
+            attention={!images.length}
+            disabled={busy !== null}
+            onClick={() => input.current?.click()}
+          >
+            {images.length ? "+ Tambah foto" : "Ambil / pilih foto"}
+          </ActionButton>
         )}
-        <button className="btn primary block" disabled={!images.length || busy !== null || !boot.ai.ready} onClick={() => setConfirming(true)}>
-          {busy === "ai" ? (
-            <>
-              <Spinner /> Membaca label…
-            </>
-          ) : (
-            "Baca dengan AI"
-          )}
-        </button>
+        {!images.length && <p className="field-error">Wajib: tambahkan minimal 1 foto tabel gizi.</p>}
+        <ActionButton
+          className="btn primary block"
+          busy={busy === "ai"}
+          busyText="AI membaca label… (10–30 detik)"
+          attention={images.length > 0}
+          disabled={!images.length || busy !== null || !boot.ai.ready}
+          onClick={() => setConfirming(true)}
+        >
+          Baca dengan AI
+        </ActionButton>
       </div>
       {confirming && (
         <ConfirmDialog

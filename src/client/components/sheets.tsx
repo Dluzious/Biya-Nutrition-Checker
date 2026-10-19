@@ -4,8 +4,8 @@ import { scaleNutrients, type NutrientKey, type NutrientMap } from "../../shared
 import { localParts, zonedToUtc } from "../../shared/time";
 import { RED_FLAGS, type IntakeUnit, type Product, type RedFlagKey } from "../../shared/types";
 import { api } from "../api";
-import { useApp } from "../store";
-import { ConfirmDialog, Field, NumberInput, Segmented, Sheet, Spinner, fmt } from "./ui";
+import { useAction, useApp } from "../store";
+import { ActionButton, ConfirmDialog, Field, NumberInput, Segmented, Sheet, fmt, requiredError } from "./ui";
 
 interface DrinkEstimate {
   isLiquid: boolean;
@@ -110,12 +110,25 @@ export function LogIntakeSheet({ prefill, onClose }: { prefill?: IntakePrefill; 
     }
   };
 
+  // Data wajib: jumlah, nama minuman (bila bukan produk), dan jam bila diisi manual.
+  const errors = {
+    amount: !amount || amount <= 0 ? "Isi jumlah yang diminum" : null,
+    otherName: productId === OTHER ? requiredError(otherName, "Isi nama minuman") : null,
+    time: customTime ? requiredError(time, "Isi jam minum") : null,
+  };
+  const valid = !errors.amount && !errors.otherName && !errors.time;
+  const [reminding, remindExec] = useAction();
+
   const quickMl = product?.servingVolumeMl
     ? [...new Set([50, 100, 150, 200, product.servingVolumeMl].filter((v) => v <= product.servingVolumeMl! * 1.5))].sort((a, b) => a - b)
     : [50, 100, 150, 200, 250];
 
   const save = async () => {
-    if (!amount) return;
+    if (saving) return;
+    if (!valid || !amount) {
+      toast("Lengkapi data yang ditandai merah dulu.", "error");
+      return;
+    }
     setSaving(true);
     const takenAt = customTime ? zonedToUtc(date, time, tz).toISOString() : undefined;
     const ok = await run(async () => {
@@ -156,8 +169,12 @@ export function LogIntakeSheet({ prefill, onClose }: { prefill?: IntakePrefill; 
   };
 
   const remind = async (minutes: number) => {
-    await run(() => api("/api/reminders", { body: { minutes } }), `Pengingat diatur ${minutes / 60} jam lagi`);
-    onClose();
+    const ok = await remindExec(
+      () => api("/api/reminders", { body: { minutes } }),
+      `Pengingat diatur ${minutes / 60} jam lagi`,
+      "Pengingat gagal diatur",
+    );
+    if (ok) onClose();
   };
 
   if (saved) {
@@ -166,9 +183,9 @@ export function LogIntakeSheet({ prefill, onClose }: { prefill?: IntakePrefill; 
         <p>Ingatkan untuk minum lagi?</p>
         <div className="grid-2" style={{ marginBottom: 8 }}>
           {[60, 120, 180, 240].map((m) => (
-            <button key={m} className="btn" onClick={() => remind(m)}>
+            <ActionButton key={m} className="btn" busy={reminding} busyText="Mengatur…" onClick={() => remind(m)}>
               {m / 60} jam lagi
-            </button>
+            </ActionButton>
           ))}
         </div>
         <button className="btn block ghost" onClick={onClose}>
@@ -199,6 +216,8 @@ export function LogIntakeSheet({ prefill, onClose }: { prefill?: IntakePrefill; 
       {productId === OTHER && (
         <Field
           label="Nama minuman"
+          required
+          error={errors.otherName}
           hint="Sebutkan cara buatnya bila perlu, mis. “jus mangga tanpa gula”, “air kelapa muda”, “kaldu ayam”."
         >
           <input
@@ -230,6 +249,8 @@ export function LogIntakeSheet({ prefill, onClose }: { prefill?: IntakePrefill; 
 
       <Field
         label={unit === "ml" || productId === OTHER ? "Jumlah yang diminum (ml)" : "Jumlah porsi"}
+        required
+        error={errors.amount}
         hint={
           product
             ? `1 takaran saji: ${product.servingLabel || "–"}${
@@ -250,20 +271,16 @@ export function LogIntakeSheet({ prefill, onClose }: { prefill?: IntakePrefill; 
 
       {productId === OTHER && !estimate && (
         <div style={{ marginBottom: 12 }}>
-          <button
+          <ActionButton
             type="button"
             className="btn block"
-            disabled={estimating || !amount || otherName.trim().length < 2 || !boot.ai.ready}
+            busy={estimating}
+            busyText="AI sedang menghitung…"
+            disabled={!amount || otherName.trim().length < 2 || !boot.ai.ready}
             onClick={() => setConfirmEstimate(true)}
           >
-            {estimating ? (
-              <>
-                <Spinner /> Menghitung…
-              </>
-            ) : (
-              "Hitung kalori & gizi dengan AI"
-            )}
-          </button>
+            Hitung kalori & gizi dengan AI
+          </ActionButton>
           <p className="tiny muted" style={{ marginTop: 6 }}>
             Tanpa dihitung, minuman ini dicatat sebagai cairan saja (0 kkal) — cocok untuk air putih atau teh tawar.
           </p>
@@ -376,16 +393,17 @@ export function LogIntakeSheet({ prefill, onClose }: { prefill?: IntakePrefill; 
         <span>Diminum sekarang{!isToday && " (tidak tersedia — tanggal yang dibuka bukan hari ini)"}</span>
       </label>
       {customTime && (
-        <Field label={`Jam minum (${date})`}>
+        <Field label={`Jam minum (${date})`} required error={errors.time}>
           <input type="time" value={time} onChange={(e) => setTime(e.target.value)} />
         </Field>
       )}
       <Field label="Catatan (opsional)">
         <input type="text" value={note} placeholder="mis. sisa sedikit, agak mual" onChange={(e) => setNote(e.target.value)} />
       </Field>
-      <button className="btn primary block" disabled={saving || !amount} onClick={save}>
-        {saving ? "Menyimpan…" : "Simpan"}
-      </button>
+      <ActionButton className="btn primary block" busy={saving} attention={valid} onClick={save}>
+        Simpan
+      </ActionButton>
+      {!valid && <p className="field-error" style={{ textAlign: "center" }}>Lengkapi data yang ditandai merah.</p>}
     </Sheet>
   );
 }
@@ -408,6 +426,7 @@ export function SymptomSheet({ onClose }: { onClose: () => void }) {
   const [saving, setSaving] = useState(false);
 
   const save = async () => {
+    if (saving) return;
     setSaving(true);
     const ok = await run(() => api("/api/symptoms", { body: { ...levels, redFlags: flags, note } }), "Gejala tercatat");
     setSaving(false);
@@ -449,9 +468,9 @@ export function SymptomSheet({ onClose }: { onClose: () => void }) {
       <Field label="Catatan (opsional)">
         <textarea value={note} onChange={(e) => setNote(e.target.value)} />
       </Field>
-      <button className="btn primary block" disabled={saving} onClick={save}>
-        {saving ? "Menyimpan…" : "Simpan"}
-      </button>
+      <ActionButton className="btn primary block" busy={saving} attention onClick={save}>
+        Simpan
+      </ActionButton>
     </Sheet>
   );
 }

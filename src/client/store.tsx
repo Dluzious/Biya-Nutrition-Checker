@@ -5,8 +5,10 @@ import { api, type Bootstrap, type DayData } from "./api";
 
 interface Toast {
   message: string;
-  kind: "info" | "error";
+  kind: ToastKind;
 }
+
+export type ToastKind = "info" | "success" | "error";
 
 interface AppState {
   boot: Bootstrap;
@@ -17,8 +19,13 @@ interface AppState {
   targets: Targets;
   setDate: (d: string) => void;
   refresh: () => Promise<void>;
-  toast: (message: string, kind?: Toast["kind"]) => void;
-  run: <T>(fn: () => Promise<T>, success?: string) => Promise<T | undefined>;
+  toast: (message: string, kind?: ToastKind) => void;
+  /**
+   * Menjalankan aksi ke server lalu memuat ulang data. Berhasil → notifikasi
+   * hijau `success`; gagal → notifikasi merah "`failure`: alasan".
+   * Mengembalikan undefined bila gagal.
+   */
+  run: <T>(fn: () => Promise<T>, success?: string, failure?: string) => Promise<T | undefined>;
   logout: () => void;
 }
 
@@ -51,10 +58,10 @@ export function AppProvider({
   const dateRef = useRef(date);
   dateRef.current = date;
 
-  const toast = useCallback((message: string, kind: Toast["kind"] = "info") => {
+  const toast = useCallback((message: string, kind: ToastKind = "info") => {
     setToastState({ message, kind });
     window.clearTimeout(toastTimer.current);
-    toastTimer.current = window.setTimeout(() => setToastState(null), kind === "error" ? 5000 : 2500);
+    toastTimer.current = window.setTimeout(() => setToastState(null), kind === "error" ? 6000 : 2800);
   }, []);
 
   const refresh = useCallback(async () => {
@@ -69,16 +76,18 @@ export function AppProvider({
   }, []);
 
   const run = useCallback(
-    async <T,>(fn: () => Promise<T>, success?: string) => {
+    async <T,>(fn: () => Promise<T>, success?: string, failure = "Gagal menyimpan") => {
+      let result: T;
       try {
-        const result = await fn();
-        await refresh();
-        if (success) toast(success);
-        return result;
+        result = await fn();
       } catch (e) {
-        toast((e as Error).message, "error");
+        toast(`${failure}: ${(e as Error).message}`, "error");
         return undefined;
       }
+      if (success) toast(success, "success");
+      // Data sudah tersimpan; gagal memuat ulang tidak mengubah hasil aksi.
+      await refresh().catch(() => {});
+      return result;
     },
     [refresh, toast],
   );
@@ -124,10 +133,45 @@ export function AppProvider({
     <Ctx.Provider value={value}>
       {children}
       {toastState && (
-        <div className={`toast ${toastState.kind === "error" ? "error" : ""}`} role="status">
-          {toastState.message}
+        <div
+          key={toastState.message + toastState.kind}
+          className={`toast ${toastState.kind}`}
+          role={toastState.kind === "error" ? "alert" : "status"}
+          onClick={() => setToastState(null)}
+        >
+          {toastState.kind !== "info" && (
+            <span className="toast-icon" aria-hidden>
+              {toastState.kind === "success" ? "✓" : "✕"}
+            </span>
+          )}
+          <span>{toastState.message}</span>
         </div>
       )}
     </Ctx.Provider>
   );
+}
+
+/**
+ * Status "sedang diproses" untuk satu tombol: `exec` menolak klik kedua
+ * selama aksi sebelumnya belum selesai.
+ */
+export function useAction() {
+  const { run } = useApp();
+  const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
+  const exec = useCallback(
+    async <T,>(fn: () => Promise<T>, success?: string, failure?: string) => {
+      if (busyRef.current) return undefined;
+      busyRef.current = true;
+      setBusy(true);
+      try {
+        return await run(fn, success, failure);
+      } finally {
+        busyRef.current = false;
+        setBusy(false);
+      }
+    },
+    [run],
+  );
+  return [busy, exec] as const;
 }

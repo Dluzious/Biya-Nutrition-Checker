@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useState } from "react";
 import type { Role } from "../shared/types";
 import { api, getToken, setToken, setUnauthorizedHandler, type Bootstrap } from "./api";
-import { Field, Icon, Segmented, Spinner } from "./components/ui";
+import { ActionButton, Field, Icon, Segmented, Spinner, requiredError } from "./components/ui";
+import { hasUsableProduct, missingPatientData } from "./completeness";
 import { NutritionPage } from "./pages/Nutrition";
 import { PatientPage } from "./pages/Patient";
 import { ProductsPage } from "./pages/Products";
 import { SchedulePage } from "./pages/Schedule";
 import { TodayPage } from "./pages/Today";
 import { isIos, isStandalone } from "./push";
-import { AppProvider } from "./store";
+import { AppProvider, useApp } from "./store";
 
 type Tab = "hari" | "nutrisi" | "jadwal" | "produk" | "pasien";
 
@@ -26,9 +27,20 @@ function Login({ onLogin }: { onLogin: () => void }) {
   const [role, setRole] = useState<Role>("pendamping");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [tried, setTried] = useState(false);
+  const errors = {
+    name: requiredError(name, "Isi nama Anda"),
+    password: requiredError(password, "Isi kata sandi keluarga"),
+  };
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (busy) return;
+    setTried(true);
+    if (errors.name || errors.password) {
+      setError("Lengkapi data yang ditandai merah.");
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -52,8 +64,8 @@ function Login({ onLogin }: { onLogin: () => void }) {
           masuk di sana.
         </div>
       )}
-      <Field label="Nama Anda">
-        <input type="text" autoComplete="nickname" value={name} required onChange={(e) => setName(e.target.value)} />
+      <Field label="Nama Anda" required error={tried ? errors.name : null}>
+        <input type="text" autoComplete="nickname" value={name} onChange={(e) => setName(e.target.value)} />
       </Field>
       <Field label="Peran">
         <Segmented
@@ -65,14 +77,46 @@ function Login({ onLogin }: { onLogin: () => void }) {
           ]}
         />
       </Field>
-      <Field label="Kata sandi keluarga">
-        <input type="password" autoComplete="current-password" value={password} required onChange={(e) => setPassword(e.target.value)} />
+      <Field label="Kata sandi keluarga" required error={tried ? errors.password : null}>
+        <input type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} />
       </Field>
-      {error && <div className="banner critical small">{error}</div>}
-      <button className="btn primary block" disabled={busy || !name.trim() || !password}>
-        {busy ? "Masuk…" : "Masuk"}
-      </button>
+      {error && (
+        <div className="banner critical small" role="alert">
+          {error}
+        </div>
+      )}
+      <ActionButton type="submit" className="btn primary block" busy={busy} busyText="Memeriksa…" attention={!errors.name && !errors.password}>
+        Masuk
+      </ActionButton>
     </form>
+  );
+}
+
+/** Titik merah di tab yang datanya wajib dilengkapi. */
+function TabBar({ tab, setTab }: { tab: Tab; setTab: (t: Tab) => void }) {
+  const { boot, targets } = useApp();
+  const needs: Partial<Record<Tab, string>> = {};
+  const missing = missingPatientData(boot, targets);
+  if (missing.length) needs.pasien = `${missing.length} data wajib belum diisi`;
+  if (!hasUsableProduct(boot)) needs.produk = "Belum ada produk dengan kandungan gizi";
+  return (
+    <nav className="tabbar" aria-label="Menu utama">
+      <div className="tabbar-inner">
+        {TABS.map((t) => (
+          <button
+            key={t.key}
+            className={tab === t.key ? "active" : ""}
+            aria-current={tab === t.key}
+            aria-label={needs[t.key] ? `${t.label} — ${needs[t.key]}` : undefined}
+            onClick={() => setTab(t.key)}
+          >
+            {needs[t.key] && <span className="tab-dot" aria-hidden />}
+            <Icon name={t.icon} />
+            {t.label}
+          </button>
+        ))}
+      </div>
+    </nav>
   );
 }
 
@@ -136,16 +180,7 @@ export function App() {
         {tab === "produk" && <ProductsPage />}
         {tab === "pasien" && <PatientPage />}
       </main>
-      <nav className="tabbar" aria-label="Menu utama">
-        <div className="tabbar-inner">
-          {TABS.map((t) => (
-            <button key={t.key} className={tab === t.key ? "active" : ""} aria-current={tab === t.key} onClick={() => setTab(t.key)}>
-              <Icon name={t.icon} />
-              {t.label}
-            </button>
-          ))}
-        </div>
-      </nav>
+      <TabBar tab={tab} setTab={setTab} />
     </AppProvider>
   );
 }

@@ -3,9 +3,9 @@ import { slotDone } from "../../shared/intake";
 import { localParts, minutesToTime, timeToMinutes } from "../../shared/time";
 import type { PushPrefs, ScheduleItem } from "../../shared/types";
 import { api, type Device } from "../api";
-import { Field, NumberInput, Sheet, Spinner, fmt } from "../components/ui";
+import { ActionButton, Field, NumberInput, Sheet, Spinner, fmt, rangeError, requiredError } from "../components/ui";
 import { currentSubscription, deviceName, pushSupport, subscribePush, subscriptionBody } from "../push";
-import { useApp } from "../store";
+import { useAction, useApp } from "../store";
 
 const PREF_LABELS: { key: keyof PushPrefs; label: string; hint: string }[] = [
   { key: "reminders", label: "Pengingat jadwal minum", hint: "Muncul tepat di jam jadwal" },
@@ -44,10 +44,10 @@ function NotificationCard() {
       await api("/api/push/subscribe", {
         body: { ...subscriptionBody(s), device: `${deviceName()} · ${boot.me.name}`, prefs: mine?.prefs },
       });
-      toast("Notifikasi aktif di HP ini");
+      toast("Notifikasi aktif di HP ini", "success");
       await load();
     } catch (e) {
-      toast((e as Error).message, "error");
+      toast(`Notifikasi gagal diaktifkan: ${(e as Error).message}`, "error");
     }
     setBusy(false);
   };
@@ -59,6 +59,7 @@ function NotificationCard() {
     await sub.unsubscribe().catch(() => {});
     await load();
     setBusy(false);
+    toast("Notifikasi di HP ini dimatikan", "success");
   };
 
   const setPref = async (key: keyof PushPrefs, value: boolean) => {
@@ -67,19 +68,23 @@ function NotificationCard() {
     try {
       await api("/api/push/prefs", { method: "PUT", body: { endpoint: sub.endpoint, prefs } });
       await load();
+      toast("Pengaturan notifikasi disimpan", "success");
     } catch (e) {
-      toast((e as Error).message, "error");
+      toast(`Gagal menyimpan: ${(e as Error).message}`, "error");
     }
   };
 
+  const [testing, setTesting] = useState(false);
   const test = async () => {
-    if (!sub) return;
+    if (!sub || testing) return;
+    setTesting(true);
     try {
       const r = await api<{ sent: number }>("/api/push/test", { body: { endpoint: sub.endpoint } });
-      toast(r.sent ? "Notifikasi tes dikirim" : "Gagal mengirim, coba aktifkan ulang", r.sent ? "info" : "error");
+      toast(r.sent ? "Notifikasi tes dikirim — cek layar HP" : "Gagal mengirim, coba matikan lalu aktifkan ulang", r.sent ? "success" : "error");
     } catch (e) {
-      toast((e as Error).message, "error");
+      toast(`Gagal mengirim tes: ${(e as Error).message}`, "error");
     }
+    setTesting(false);
   };
 
   return (
@@ -99,9 +104,9 @@ function NotificationCard() {
       {support === "ok" && !mine && (
         <>
           <p className="small secondary">Aktifkan agar HP ini menerima pengingat minum dan peringatan.</p>
-          <button className="btn primary block" disabled={busy} onClick={enable}>
-            {busy ? "Mengaktifkan…" : "Aktifkan notifikasi"}
-          </button>
+          <ActionButton className="btn primary block" busy={busy} busyText="Mengaktifkan…" attention onClick={enable}>
+            Aktifkan notifikasi
+          </ActionButton>
         </>
       )}
       {support === "ok" && mine && (
@@ -116,12 +121,12 @@ function NotificationCard() {
             </label>
           ))}
           <div className="row" style={{ marginTop: 6 }}>
-            <button className="btn sm" onClick={test}>
+            <ActionButton className="btn sm" busy={testing} busyText="Mengirim…" onClick={test}>
               Kirim tes
-            </button>
-            <button className="btn sm ghost danger" disabled={busy} onClick={disable}>
+            </ActionButton>
+            <ActionButton className="btn sm ghost danger" busy={busy} busyText="Mematikan…" onClick={disable}>
               Matikan
-            </button>
+            </ActionButton>
           </div>
           <p className="tiny muted" style={{ marginTop: 8 }}>
             Pastikan mode Fokus/Jangan Ganggu di iPhone tidak memblokir notifikasi aplikasi ini.
@@ -173,19 +178,30 @@ function ServerStatus({ heartbeat, serverTime }: { heartbeat: string | null; ser
 type Draft = Omit<ScheduleItem, "id"> & { id?: string };
 
 function ScheduleSheet({ draft, onClose }: { draft: Draft; onClose: () => void }) {
-  const { boot, run } = useApp();
+  const { boot, toast } = useApp();
+  const [saving, exec] = useAction();
+  const [removing, execRemove] = useAction();
   const [d, setD] = useState(draft);
   const products = boot.products.filter((p) => p.active);
+  const errors = {
+    time: requiredError(d.time, "Isi jam jadwal"),
+    plannedMl: rangeError(d.plannedMl, 10, 2000, "ml"),
+  };
+  const valid = !errors.time && !errors.plannedMl;
   const save = async () => {
-    const ok = await run(
+    if (!valid) {
+      toast("Lengkapi data yang ditandai merah dulu.", "error");
+      return;
+    }
+    const ok = await exec(
       () => (d.id ? api(`/api/schedule/${d.id}`, { method: "PUT", body: d }) : api("/api/schedule", { body: d })),
-      "Jadwal disimpan",
+      `Jadwal ${d.time} disimpan`,
     );
     if (ok) onClose();
   };
   return (
     <Sheet title={d.id ? "Ubah jadwal" : "Tambah jadwal"} onClose={onClose}>
-      <Field label="Jam">
+      <Field label="Jam" required error={errors.time}>
         <input type="time" value={d.time} onChange={(e) => setD({ ...d, time: e.target.value })} />
       </Field>
       <Field label="Label (opsional)">
@@ -201,7 +217,7 @@ function ScheduleSheet({ draft, onClose }: { draft: Draft; onClose: () => void }
           ))}
         </select>
       </Field>
-      <Field label="Rencana jumlah (ml)">
+      <Field label="Rencana jumlah (ml)" error={errors.plannedMl}>
         <NumberInput value={d.plannedMl} onChange={(v) => setD({ ...d, plannedMl: v })} placeholder="kosongkan bila bebas" />
       </Field>
       <label className="check">
@@ -209,20 +225,22 @@ function ScheduleSheet({ draft, onClose }: { draft: Draft; onClose: () => void }
         <span>Aktif (kirim pengingat)</span>
       </label>
       <div className="row" style={{ marginTop: 8 }}>
-        <button className="btn primary grow" onClick={save}>
+        <ActionButton className="btn primary grow" busy={saving} attention={valid} onClick={save}>
           Simpan
-        </button>
+        </ActionButton>
         {d.id && (
-          <button
+          <ActionButton
             className="btn danger"
+            busy={removing}
+            busyText="Menghapus…"
             onClick={async () => {
               if (!confirm("Hapus jadwal ini?")) return;
-              const ok = await run(() => api(`/api/schedule/${d.id}`, { method: "DELETE" }), "Jadwal dihapus");
+              const ok = await execRemove(() => api(`/api/schedule/${d.id}`, { method: "DELETE" }), "Jadwal dihapus", "Gagal menghapus");
               if (ok) onClose();
             }}
           >
             Hapus
-          </button>
+          </ActionButton>
         )}
       </div>
     </Sheet>
@@ -230,7 +248,8 @@ function ScheduleSheet({ draft, onClose }: { draft: Draft; onClose: () => void }
 }
 
 function GeneratorSheet({ onClose }: { onClose: () => void }) {
-  const { boot, targets, run } = useApp();
+  const { boot, targets, toast } = useApp();
+  const [saving, exec] = useAction();
   const products = boot.products.filter((p) => p.active && p.servingVolumeMl && p.nutrients.energy_kcal);
   const [count, setCount] = useState<number | null>(6);
   const [start, setStart] = useState("07:00");
@@ -252,9 +271,19 @@ function GeneratorSheet({ onClose }: { onClose: () => void }) {
       ? Math.round(targets.energy.target / times.length / (product.nutrients.energy_kcal! / product.servingVolumeMl!) / 10) * 10
       : null;
   const maxVol = boot.profile.maxVolumePerSittingMl ?? 200;
+  const errors = {
+    start: requiredError(start, "Isi jam mulai"),
+    end: requiredError(end, "Isi jam selesai") ?? (start && timeToMinutes(end) <= timeToMinutes(start) ? "Harus setelah jam mulai" : null),
+    count: requiredError(count, "Isi jumlah minum per hari") ?? rangeError(count, 1, 12, "kali"),
+  };
+  const valid = !errors.start && !errors.end && !errors.count;
 
   const generate = async () => {
-    const ok = await run(async () => {
+    if (!valid) {
+      toast("Lengkapi data yang ditandai merah dulu.", "error");
+      return;
+    }
+    const ok = await exec(async () => {
       if (replace) for (const s of boot.schedule) await api(`/api/schedule/${s.id}`, { method: "DELETE" });
       for (const t of times) {
         await api("/api/schedule", {
@@ -262,21 +291,21 @@ function GeneratorSheet({ onClose }: { onClose: () => void }) {
         });
       }
       return true;
-    }, "Jadwal dibuat");
+    }, `${times.length} jadwal dibuat`, "Gagal membuat jadwal");
     if (ok) onClose();
   };
 
   return (
     <Sheet title="Buat jadwal otomatis" onClose={onClose}>
       <div className="grid-2">
-        <Field label="Mulai">
+        <Field label="Mulai" required error={errors.start}>
           <input type="time" value={start} onChange={(e) => setStart(e.target.value)} />
         </Field>
-        <Field label="Selesai">
+        <Field label="Selesai" required error={errors.end}>
           <input type="time" value={end} onChange={(e) => setEnd(e.target.value)} />
         </Field>
       </div>
-      <Field label="Berapa kali minum per hari">
+      <Field label="Berapa kali minum per hari" required error={errors.count}>
         <NumberInput value={count} onChange={setCount} />
       </Field>
       <Field label="Produk utama">
@@ -310,15 +339,16 @@ function GeneratorSheet({ onClose }: { onClose: () => void }) {
           <span>Ganti semua jadwal yang ada ({boot.schedule.length})</span>
         </label>
       )}
-      <button className="btn primary block" onClick={generate}>
-        Buat {times.length} jadwal
-      </button>
+      <ActionButton className="btn primary block" busy={saving} busyText="Membuat jadwal…" attention={valid} onClick={generate}>
+        Buat {valid ? times.length : ""} jadwal
+      </ActionButton>
     </Sheet>
   );
 }
 
 export function SchedulePage() {
-  const { boot, day, todayDate, run } = useApp();
+  const { boot, day, todayDate } = useApp();
+  const [savingMissed, execMissed] = useAction();
   const [editing, setEditing] = useState<Draft | null>(null);
   const todayIntakeMinutes =
     day && day.date === todayDate ? day.intakes.map((i) => localParts(new Date(i.takenAt), boot.profile.timezone).minutes) : null;
@@ -376,24 +406,34 @@ export function SchedulePage() {
         <p className="small secondary">
           Pendamping diberi tahu bila belum ada catatan minum sekian menit setelah jam jadwal.
         </p>
-        <div className="row">
-          <div className="grow">
-            <NumberInput value={missed} onChange={setMissed} />
-          </div>
-          <span>menit</span>
-          <button
-            className="btn"
-            disabled={!missed || missed === boot.profile.missedAlertMinutes}
-            onClick={() =>
-              run(
-                () => api("/api/profile", { method: "PUT", body: { ...boot.profile, missedAlertMinutes: Math.round(missed!) } }),
-                "Tersimpan",
-              )
-            }
-          >
-            Simpan
-          </button>
-        </div>
+        {(() => {
+          const error = requiredError(missed, "Isi jumlah menit") ?? rangeError(missed, 10, 240, "menit");
+          const changed = missed !== boot.profile.missedAlertMinutes;
+          return (
+            <div className="row" style={{ alignItems: "flex-start" }}>
+              <div className="grow">
+                <Field label="Menit setelah jadwal" required error={error}>
+                  <NumberInput value={missed} onChange={setMissed} />
+                </Field>
+              </div>
+              <ActionButton
+                className="btn primary"
+                style={{ marginTop: 26 }}
+                busy={savingMissed}
+                attention={changed && !error}
+                disabled={Boolean(error) || !changed}
+                onClick={() =>
+                  execMissed(
+                    () => api("/api/profile", { method: "PUT", body: { ...boot.profile, missedAlertMinutes: Math.round(missed!) } }),
+                    `Peringatan diatur ${Math.round(missed!)} menit setelah jadwal`,
+                  )
+                }
+              >
+                Simpan
+              </ActionButton>
+            </div>
+          );
+        })()}
       </div>
 
       {editing && <ScheduleSheet draft={editing} onClose={() => setEditing(null)} />}

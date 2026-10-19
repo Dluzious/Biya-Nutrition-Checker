@@ -5,7 +5,8 @@ import { RED_FLAGS } from "../../shared/types";
 import { api } from "../api";
 import { EvaluationCard } from "../components/EvaluationCard";
 import { LogIntakeSheet, SymptomSheet, type IntakePrefill } from "../components/sheets";
-import { ConfirmDialog, Meter, Spinner, fmt, fmtDate, fmtIn, fmtTime, minutesAgo } from "../components/ui";
+import { ActionButton, ConfirmDialog, Meter, Spinner, fmt, fmtDate, fmtIn, fmtTime, minutesAgo } from "../components/ui";
+import { missingPatientData } from "../completeness";
 import { useApp } from "../store";
 
 export function TodayPage({ goTo }: { goTo: (tab: "pasien" | "produk" | "jadwal") => void }) {
@@ -59,15 +60,19 @@ export function TodayPage({ goTo }: { goTo: (tab: "pasien" | "produk" | "jadwal"
       return;
     }
     setAiBusy(kind);
-    await run(() => api(kind === "saran" ? "/api/ai/suggest" : "/api/ai/evaluate", { body: { date } }));
+    await run(
+      () => api(kind === "saran" ? "/api/ai/suggest" : "/api/ai/evaluate", { body: { date } }),
+      kind === "saran" ? "Saran AI siap — lihat di bawah" : "Evaluasi AI selesai — lihat di bawah",
+      kind === "saran" ? "Saran AI gagal" : "Evaluasi AI gagal",
+    );
     setAiBusy(null);
   };
 
   const remove = (id: string, name: string) => {
-    if (confirm(`Hapus catatan ${name}?`)) run(() => api(`/api/intakes/${id}`, { method: "DELETE" }), "Catatan dihapus");
+    if (confirm(`Hapus catatan ${name}?`)) run(() => api(`/api/intakes/${id}`, { method: "DELETE" }), "Catatan minum dihapus", "Gagal menghapus");
   };
 
-  const profileIncomplete = !boot.profile.heightCm || targets.weightKg === null;
+  const missing = missingPatientData(boot, targets);
 
   return (
     <>
@@ -102,12 +107,12 @@ export function TodayPage({ goTo }: { goTo: (tab: "pasien" | "produk" | "jadwal"
         </div>
       )}
 
-      {profileIncomplete && (
-        <div className="banner warning">
-          <strong>Data pasien belum lengkap</strong>
-          Isi tinggi dan berat badan agar target kalori, protein, dan cairan bisa dihitung.
+      {missing.length > 0 && (
+        <div className="banner critical" role="alert">
+          <strong>Data pasien wajib belum lengkap</strong>
+          Belum diisi: {missing.map((m) => m.label).join(", ")}. Tanpa data ini target kalori, protein, dan cairan tidak akurat.
           <div style={{ marginTop: 8 }}>
-            <button className="btn sm" onClick={() => goTo("pasien")}>
+            <button className="btn sm primary attention" onClick={() => goTo("pasien")}>
               Lengkapi data pasien
             </button>
           </div>
@@ -199,7 +204,9 @@ export function TodayPage({ goTo }: { goTo: (tab: "pasien" | "produk" | "jadwal"
           <div className="row wrap">
             {next.product && next.amount && (
               <button
-                className="btn primary"
+                className={`btn primary${
+                  next.slot && Math.abs(timeToMinutes(next.slot.time) - nowMinutes) <= 30 ? " attention" : ""
+                }`}
                 onClick={() =>
                   setSheet({ kind: "intake", prefill: { productId: next.product!.id, amount: next.amount!, unit: next.unit } })
                 }
@@ -231,12 +238,24 @@ export function TodayPage({ goTo }: { goTo: (tab: "pasien" | "produk" | "jadwal"
           {!boot.ai.ready && <span className="tiny muted">belum aktif</span>}
         </div>
         <div className="grid-2">
-          <button className="btn" disabled={aiBusy !== null || !isToday} onClick={() => setConfirmAi("saran")}>
-            {aiBusy === "saran" ? <Spinner /> : "Saran berikutnya"}
-          </button>
-          <button className="btn" disabled={aiBusy !== null} onClick={() => setConfirmAi("evaluasi")}>
-            {aiBusy === "evaluasi" ? <Spinner /> : "Evaluasi kecukupan"}
-          </button>
+          <ActionButton
+            className="btn"
+            busy={aiBusy === "saran"}
+            busyText="AI menganalisis…"
+            disabled={aiBusy !== null || !isToday}
+            onClick={() => setConfirmAi("saran")}
+          >
+            Saran berikutnya
+          </ActionButton>
+          <ActionButton
+            className="btn"
+            busy={aiBusy === "evaluasi"}
+            busyText="AI menganalisis…"
+            disabled={aiBusy !== null}
+            onClick={() => setConfirmAi("evaluasi")}
+          >
+            Evaluasi kecukupan
+          </ActionButton>
         </div>
         {aiBusy && <p className="tiny muted" style={{ marginTop: 8 }}>AI sedang menganalisis, biasanya 10–40 detik…</p>}
       </div>
@@ -301,7 +320,7 @@ export function TodayPage({ goTo }: { goTo: (tab: "pasien" | "produk" | "jadwal"
                 <button
                   className="btn ghost small"
                   aria-label="Hapus"
-                  onClick={() => confirm("Hapus catatan gejala ini?") && run(() => api(`/api/symptoms/${s.id}`, { method: "DELETE" }))}
+                  onClick={() => confirm("Hapus catatan gejala ini?") && run(() => api(`/api/symptoms/${s.id}`, { method: "DELETE" }), "Catatan gejala dihapus", "Gagal menghapus")}
                 >
                   ✕
                 </button>
@@ -319,7 +338,7 @@ export function TodayPage({ goTo }: { goTo: (tab: "pasien" | "produk" | "jadwal"
               <li key={r.id}>
                 <span className="time-badge">{fmtTime(r.dueAt, tz)}</span>
                 <span className="grow small">{r.message}</span>
-                <button className="btn ghost small" onClick={() => run(() => api(`/api/reminders/${r.id}`, { method: "DELETE" }), "Pengingat dibatalkan")}>
+                <button className="btn ghost small" onClick={() => run(() => api(`/api/reminders/${r.id}`, { method: "DELETE" }), "Pengingat dibatalkan", "Gagal membatalkan")}>
                   Batal
                 </button>
               </li>
