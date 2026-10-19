@@ -281,7 +281,7 @@ export function LogIntakeSheet({ prefill, onClose }: { prefill?: IntakePrefill; 
           }}
         >
           <p>
-            “{otherName.trim()}” {amount} ml akan diperkirakan oleh AI (perkiraan biaya USD 0,02–0,05).
+            “{otherName.trim()}” {amount} ml akan diperkirakan oleh AI.
           </p>
           {similar.length > 0 && (
             <>

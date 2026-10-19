@@ -247,8 +247,8 @@ function PhotoSheet({ onDraft, onClose }: { onDraft: (d: AiDraft) => void; onClo
           }}
         >
           <p>
-            {images.length} foto akan dikirim ke AI (perkiraan biaya USD 0,03–0,07). Pastikan tabel gizinya tajam dan terbaca — foto buram
-            membuang biaya dan hasilnya kurang akurat.
+            {images.length} foto akan dikirim ke AI. Pastikan tabel gizinya tajam dan terbaca — foto buram membuat hasilnya kurang
+            akurat.
           </p>
           <p>Produk yang sudah tersimpan tidak perlu difoto ulang kecuali kemasannya berubah.</p>
         </ConfirmDialog>

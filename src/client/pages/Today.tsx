@@ -353,8 +353,7 @@ export function TodayPage({ goTo }: { goTo: (tab: "pasien" | "produk" | "jadwal"
               }}
             >
               <p>
-                Data {isToday ? "hari ini" : fmtDate(date)} akan dikirim ke AI untuk {what}. Setiap permintaan dikenai biaya API
-                (perkiraan USD {confirmAi === "evaluasi" ? "0,05–0,15" : "0,03–0,08"}).
+                Data {isToday ? "hari ini" : fmtDate(date)} akan dikirim ke AI untuk {what}.
               </p>
               {info ? (
                 <p>
