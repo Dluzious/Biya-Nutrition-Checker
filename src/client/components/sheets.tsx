@@ -2,12 +2,14 @@ import { useMemo, useState } from "react";
 import { intakeFromProduct } from "../../shared/intake";
 import { scaleNutrients, type NutrientKey, type NutrientMap } from "../../shared/nutrients";
 import { localParts, zonedToUtc } from "../../shared/time";
-import { RED_FLAGS, type IntakeUnit, type Product, type RedFlagKey } from "../../shared/types";
+import { RED_FLAGS, type Intake, type IntakeUnit, type Product, type RedFlagKey } from "../../shared/types";
 import { api } from "../api";
 import { useAction, useApp } from "../store";
 import { ActionButton, ConfirmDialog, Field, NumberInput, Segmented, Sheet, fmt, requiredError } from "./ui";
 
 interface DrinkEstimate {
+  /** true = kandungan diambil dari catatan lama (mode edit), bukan dari AI. */
+  fromRecord?: boolean;
   isLiquid: boolean;
   name: string;
   volumeMl: number;
@@ -33,27 +35,65 @@ export interface IntakePrefill {
 
 const OTHER = "__other__";
 
-export function LogIntakeSheet({ prefill, onClose }: { prefill?: IntakePrefill; onClose: () => void }) {
-  const { boot, date, isToday, run, toast } = useApp();
+/**
+ * Form catat minum. Dengan `editing`, form mengubah catatan yang sudah ada
+ * (produk, jumlah, tanggal & jam, catatan) lalu menyimpannya kembali.
+ */
+export function LogIntakeSheet({
+  prefill,
+  editing,
+  onClose,
+}: {
+  prefill?: IntakePrefill;
+  editing?: Intake;
+  onClose: () => void;
+}) {
+  const { boot, date, isToday, todayDate, run, toast } = useApp();
   const tz = boot.profile.timezone;
-  const products = boot.products.filter((p) => p.active);
-  const first = prefill ? products.find((p) => p.id === prefill.productId) : products[0];
+  const editProduct = editing?.productId ? boot.products.find((p) => p.id === editing.productId) : undefined;
+  // Produk catatan lama tetap bisa dipilih walau sudah tidak "sedang dipakai".
+  const products = boot.products.filter((p) => p.active || p.id === editProduct?.id);
+  const first = editing ? editProduct : prefill ? products.find((p) => p.id === prefill.productId) : products[0];
+  // Catatan tanpa produk (atau produknya sudah dihapus): kandungan lama dipakai dan diskalakan.
+  const recordEstimate: DrinkEstimate | null =
+    editing && !editProduct && Object.keys(editing.nutrients).length > 0 && editing.volumeMl > 0
+      ? {
+          fromRecord: true,
+          isLiquid: true,
+          name: editing.productName,
+          volumeMl: editing.volumeMl,
+          nutrients: editing.nutrients,
+          assumptions: [],
+          cautions: [],
+          confidence: "tinggi",
+        }
+      : null;
 
   const [productId, setProductId] = useState<string>(first?.id ?? OTHER);
   const product = products.find((p) => p.id === productId);
-  const [unit, setUnit] = useState<IntakeUnit>(prefill?.unit ?? (first?.servingVolumeMl ? "ml" : "porsi"));
-  const [amount, setAmount] = useState<number | null>(
-    prefill?.amount ?? (first?.servingVolumeMl ? first.servingVolumeMl : 1),
+  const [unit, setUnit] = useState<IntakeUnit>(
+    editing ? (editProduct ? editing.unit : "ml") : (prefill?.unit ?? (first?.servingVolumeMl ? "ml" : "porsi")),
   );
-  const [otherName, setOtherName] = useState("Air putih");
-  const [customTime, setCustomTime] = useState(!isToday);
-  const [time, setTime] = useState(() => (isToday ? localParts(new Date(), tz).time : "12:00"));
-  const [note, setNote] = useState("");
+  const [amount, setAmount] = useState<number | null>(
+    editing
+      ? editProduct
+        ? editing.amount
+        : Math.round(editing.volumeMl || editing.amount)
+      : (prefill?.amount ?? (first?.servingVolumeMl ? first.servingVolumeMl : 1)),
+  );
+  const [otherName, setOtherName] = useState(editing && !editProduct ? editing.productName : "Air putih");
+  const [customTime, setCustomTime] = useState(Boolean(editing) || !isToday);
+  const [entryDate, setEntryDate] = useState(editing?.localDate ?? date);
+  const [time, setTime] = useState(() =>
+    editing ? localParts(new Date(editing.takenAt), tz).time : isToday ? localParts(new Date(), tz).time : "12:00",
+  );
+  const [note, setNote] = useState(editing?.note ?? "");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [removing, execRemove] = useAction();
   // Perkiraan AI untuk minuman di luar daftar produk; kandungannya untuk estimate.volumeMl.
-  const [estimate, setEstimate] = useState<DrinkEstimate | null>(null);
-  const [estNutrients, setEstNutrients] = useState<NutrientMap>({});
+  const [estimate, setEstimate] = useState<DrinkEstimate | null>(recordEstimate);
+  const [estNutrients, setEstNutrients] = useState<NutrientMap>(recordEstimate?.nutrients ?? {});
   const [estimating, setEstimating] = useState(false);
   const [saveAsProduct, setSaveAsProduct] = useState(true);
   const [confirmEstimate, setConfirmEstimate] = useState(false);
@@ -115,8 +155,9 @@ export function LogIntakeSheet({ prefill, onClose }: { prefill?: IntakePrefill; 
     amount: !amount || amount <= 0 ? "Isi jumlah yang diminum" : null,
     otherName: productId === OTHER ? requiredError(otherName, "Isi nama minuman") : null,
     time: customTime ? requiredError(time, "Isi jam minum") : null,
+    date: editing ? (requiredError(entryDate, "Isi tanggal") ?? (entryDate > todayDate ? "Tidak boleh di masa depan" : null)) : null,
   };
-  const valid = !errors.amount && !errors.otherName && !errors.time;
+  const valid = !errors.amount && !errors.otherName && !errors.time && !errors.date;
   const [reminding, remindExec] = useAction();
 
   const quickMl = product?.servingVolumeMl
@@ -130,7 +171,24 @@ export function LogIntakeSheet({ prefill, onClose }: { prefill?: IntakePrefill; 
       return;
     }
     setSaving(true);
-    const takenAt = customTime ? zonedToUtc(date, time, tz).toISOString() : undefined;
+    const takenAt = customTime ? zonedToUtc(editing ? entryDate : date, time, tz).toISOString() : undefined;
+    if (editing) {
+      const body =
+        productId !== OTHER
+          ? { productId, amount, unit, takenAt, note }
+          : {
+              productId: null,
+              productName: estimate && !estimate.fromRecord ? estimate.name : otherName.trim() || "Cairan lain",
+              volumeMl: amount,
+              nutrients: preview?.nutrients ?? {},
+              takenAt,
+              note,
+            };
+      const ok = await run(() => api(`/api/intakes/${editing.id}`, { method: "PUT", body }), "Catatan minum diperbarui");
+      setSaving(false);
+      if (ok) onClose();
+      return;
+    }
     const ok = await run(async () => {
       if (productId !== OTHER) {
         return api("/api/intakes", { body: { productId, amount, unit, takenAt, note } });
@@ -177,6 +235,12 @@ export function LogIntakeSheet({ prefill, onClose }: { prefill?: IntakePrefill; 
     if (ok) onClose();
   };
 
+  const remove = async () => {
+    if (!editing || !confirm(`Hapus catatan ${editing.productName}?`)) return;
+    const ok = await execRemove(() => api(`/api/intakes/${editing.id}`, { method: "DELETE" }), "Catatan minum dihapus", "Gagal menghapus");
+    if (ok) onClose();
+  };
+
   if (saved) {
     return (
       <Sheet title="Tercatat ✓" onClose={onClose}>
@@ -196,7 +260,12 @@ export function LogIntakeSheet({ prefill, onClose }: { prefill?: IntakePrefill; 
   }
 
   return (
-    <Sheet title="Catat minum" onClose={onClose}>
+    <Sheet title={editing ? "Ubah catatan minum" : "Catat minum"} onClose={onClose}>
+      {editing && (
+        <p className="small muted" style={{ marginTop: -4 }}>
+          Dicatat oleh {editing.loggedByName ?? "?"}. Ubah yang perlu, lalu simpan.
+        </p>
+      )}
       <Field label="Produk">
         <div className="chips">
           {products.map((p) => (
@@ -225,7 +294,8 @@ export function LogIntakeSheet({ prefill, onClose }: { prefill?: IntakePrefill; 
             value={otherName}
             onChange={(e) => {
               setOtherName(e.target.value);
-              setEstimate(null);
+              // Kandungan dari catatan lama tetap dipakai walau namanya diubah.
+              if (!estimate?.fromRecord) setEstimate(null);
             }}
           />
         </Field>
@@ -330,7 +400,9 @@ export function LogIntakeSheet({ prefill, onClose }: { prefill?: IntakePrefill; 
       {productId === OTHER && estimate && (
         <div className={`banner ${estimate.confidence === "tinggi" ? "info" : "warning"}`}>
           <strong>
-            {estimate.name} — perkiraan AI (keyakinan {estimate.confidence})
+            {estimate.fromRecord
+              ? `Kandungan dari catatan sebelumnya (untuk ${fmt(estimate.volumeMl)} ml), disesuaikan dengan jumlah baru`
+              : `${estimate.name} — perkiraan AI (keyakinan ${estimate.confidence})`}
           </strong>
           {estimate.assumptions.length > 0 && <div className="small secondary">Asumsi: {estimate.assumptions.join("; ")}</div>}
           {estimate.cautions.length > 0 && (
@@ -358,10 +430,12 @@ export function LogIntakeSheet({ prefill, onClose }: { prefill?: IntakePrefill; 
               ))}
             </div>
           </details>
-          <label className="check">
-            <input type="checkbox" checked={saveAsProduct} onChange={(e) => setSaveAsProduct(e.target.checked)} />
-            <span className="small">Simpan sebagai produk agar lain kali tinggal dipilih (tanpa AI)</span>
-          </label>
+          {!editing && (
+            <label className="check">
+              <input type="checkbox" checked={saveAsProduct} onChange={(e) => setSaveAsProduct(e.target.checked)} />
+              <span className="small">Simpan sebagai produk agar lain kali tinggal dipilih (tanpa AI)</span>
+            </label>
+          )}
         </div>
       )}
 
@@ -388,21 +462,41 @@ export function LogIntakeSheet({ prefill, onClose }: { prefill?: IntakePrefill; 
         </div>
       )}
 
-      <label className="check">
-        <input type="checkbox" checked={!customTime} disabled={!isToday} onChange={(e) => setCustomTime(!e.target.checked)} />
-        <span>Diminum sekarang{!isToday && " (tidak tersedia — tanggal yang dibuka bukan hari ini)"}</span>
-      </label>
-      {customTime && (
-        <Field label={`Jam minum (${date})`} required error={errors.time}>
-          <input type="time" value={time} onChange={(e) => setTime(e.target.value)} />
-        </Field>
+      {editing ? (
+        <div className="grid-2">
+          <Field label="Tanggal minum" required error={errors.date}>
+            <input type="date" value={entryDate} max={todayDate} onChange={(e) => setEntryDate(e.target.value)} />
+          </Field>
+          <Field label="Jam minum" required error={errors.time}>
+            <input type="time" value={time} onChange={(e) => setTime(e.target.value)} />
+          </Field>
+        </div>
+      ) : (
+        <>
+          <label className="check">
+            <input type="checkbox" checked={!customTime} disabled={!isToday} onChange={(e) => setCustomTime(!e.target.checked)} />
+            <span>Diminum sekarang{!isToday && " (tidak tersedia — tanggal yang dibuka bukan hari ini)"}</span>
+          </label>
+          {customTime && (
+            <Field label={`Jam minum (${date})`} required error={errors.time}>
+              <input type="time" value={time} onChange={(e) => setTime(e.target.value)} />
+            </Field>
+          )}
+        </>
       )}
       <Field label="Catatan (opsional)">
         <input type="text" value={note} placeholder="mis. sisa sedikit, agak mual" onChange={(e) => setNote(e.target.value)} />
       </Field>
-      <ActionButton className="btn primary block" busy={saving} attention={valid} onClick={save}>
-        Simpan
-      </ActionButton>
+      <div className="row">
+        <ActionButton className="btn primary grow" busy={saving} attention={valid} onClick={save}>
+          {editing ? "Simpan perubahan" : "Simpan"}
+        </ActionButton>
+        {editing && (
+          <ActionButton className="btn danger" busy={removing} busyText="Menghapus…" onClick={remove}>
+            Hapus
+          </ActionButton>
+        )}
+      </div>
       {!valid && <p className="field-error" style={{ textAlign: "center" }}>Lengkapi data yang ditandai merah.</p>}
     </Sheet>
   );

@@ -190,6 +190,8 @@ export interface PushPrefs {
   missed: boolean;
   alerts: boolean;
   activity: boolean;
+  /** Target energi/protein harian tercapai. */
+  achievements: boolean;
 }
 
 export interface Evaluation {
@@ -211,10 +213,13 @@ export interface EvaluationOutput {
   rencana_asupan_berikutnya: string;
   tanda_bahaya: string[];
   pertanyaan_untuk_dokter: string[];
+  /** Kalimat penyemangat (evaluasi lama belum punya). */
+  semangat?: string;
 }
 
 export interface SuggestionOutput {
   saran_utama: string;
   rincian: string[];
   catatan: string[];
+  semangat?: string;
 }

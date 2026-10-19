@@ -1,18 +1,20 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { expectedFraction, suggestNext, sumIntakes } from "../../shared/intake";
 import { addDays, localParts, timeToMinutes } from "../../shared/time";
-import { RED_FLAGS } from "../../shared/types";
+import { RED_FLAGS, type Intake } from "../../shared/types";
 import { api } from "../api";
 import { EvaluationCard } from "../components/EvaluationCard";
 import { LogIntakeSheet, SymptomSheet, type IntakePrefill } from "../components/sheets";
-import { ActionButton, ConfirmDialog, Meter, Spinner, fmt, fmtDate, fmtIn, fmtTime, minutesAgo } from "../components/ui";
+import { ActionButton, ConfirmDialog, Confetti, Meter, NEAR_PCT, Spinner, fmt, fmtDate, fmtIn, fmtTime, minutesAgo } from "../components/ui";
 import { missingPatientData } from "../completeness";
 import { useApp } from "../store";
 
 export function TodayPage({ goTo }: { goTo: (tab: "pasien" | "produk" | "jadwal") => void }) {
   const { boot, day, date, setDate, isToday, todayDate, targets, run, toast } = useApp();
   const tz = boot.profile.timezone;
-  const [sheet, setSheet] = useState<null | { kind: "intake"; prefill?: IntakePrefill } | { kind: "symptom" }>(() =>
+  const [sheet, setSheet] = useState<
+    null | { kind: "intake"; prefill?: IntakePrefill } | { kind: "edit"; intake: Intake } | { kind: "symptom" }
+  >(() =>
     new URLSearchParams(location.search).has("log") ? { kind: "intake" } : null,
   );
   const [aiBusy, setAiBusy] = useState<null | "saran" | "evaluasi">(null);
@@ -20,6 +22,44 @@ export function TodayPage({ goTo }: { goTo: (tab: "pasien" | "produk" | "jadwal"
 
   const intakes = day?.intakes ?? [];
   const totals = useMemo(() => sumIntakes(intakes), [intakes]);
+
+  // Rayakan saat target hampir/sudah tercapai setelah ada catatan baru (bukan saat halaman dibuka).
+  const pct = (v: number | undefined, t: number | undefined) => (t ? ((v ?? 0) / t) * 100 : null);
+  const pcts = {
+    Energi: pct(totals.nutrients.energy_kcal, targets.energy?.target),
+    Protein: pct(totals.nutrients.protein_g, targets.protein?.target),
+    Cairan: pct(totals.volumeMl, targets.fluid?.target),
+  };
+  const [celebrating, setCelebrating] = useState<string[]>([]);
+  const prevPcts = useRef<{ date: string; pcts: typeof pcts } | null>(null);
+  useEffect(() => {
+    if (!day || day.date !== date || !isToday) {
+      prevPcts.current = null;
+      return;
+    }
+    const prev = prevPcts.current;
+    prevPcts.current = { date, pcts };
+    if (!prev || prev.date !== date) return;
+    const reached: string[] = [];
+    const near: string[] = [];
+    for (const [label, now] of Object.entries(pcts)) {
+      const before = prev.pcts[label as keyof typeof pcts];
+      if (before === null || now === null) continue;
+      if (before < 100 && now >= 100) reached.push(label);
+      else if (before < NEAR_PCT && now >= NEAR_PCT && now < 100) near.push(label);
+    }
+    const name = boot.profile.name || "";
+    if (reached.length) {
+      setCelebrating(reached);
+      toast(`🎉 Target ${reached.join(" & ").toLowerCase()} hari ini tercapai! Hebat${name ? `, ${name}` : ""}!`, "success");
+      const id = window.setTimeout(() => setCelebrating([]), 3200);
+      return () => window.clearTimeout(id);
+    }
+    if (near.length) {
+      toast(`💪 Sedikit lagi! ${near.join(" & ")} sudah di atas ${NEAR_PCT}% — semangat${name ? `, ${name}` : ""}!`, "success");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [day, pcts.Energi, pcts.Protein, pcts.Cairan]);
   const nowMinutes = isToday ? localParts(new Date(), tz).minutes : date < todayDate ? 24 * 60 : 0;
   const expected = isToday ? expectedFraction(nowMinutes, boot.schedule) : null;
   const intakeMinutes = intakes.map((i) => localParts(new Date(i.takenAt), tz).minutes);
@@ -130,6 +170,7 @@ export function TodayPage({ goTo }: { goTo: (tab: "pasien" | "produk" | "jadwal"
           target={targets.energy?.target}
           unit="kkal"
           expected={expected}
+          celebrate={celebrating.includes("Energi")}
           sub={
             targets.refeeding.rampActive ? (
               <div className="tiny muted" style={{ marginTop: 2 }}>
@@ -138,8 +179,22 @@ export function TodayPage({ goTo }: { goTo: (tab: "pasien" | "produk" | "jadwal"
             ) : null
           }
         />
-        <Meter label="Protein" value={totals.nutrients.protein_g ?? 0} target={targets.protein?.target} unit="g" expected={expected} />
-        <Meter label="Cairan" value={totals.volumeMl} target={targets.fluid?.target} unit="ml" expected={expected} />
+        <Meter
+          label="Protein"
+          value={totals.nutrients.protein_g ?? 0}
+          target={targets.protein?.target}
+          unit="g"
+          expected={expected}
+          celebrate={celebrating.includes("Protein")}
+        />
+        <Meter
+          label="Cairan"
+          value={totals.volumeMl}
+          target={targets.fluid?.target}
+          unit="ml"
+          expected={expected}
+          celebrate={celebrating.includes("Cairan")}
+        />
         <div className="grid-2 small" style={{ marginTop: 6 }}>
           <div>
             <span className="muted">Karbohidrat</span>
@@ -273,7 +328,15 @@ export function TodayPage({ goTo }: { goTo: (tab: "pasien" | "produk" | "jadwal"
         ) : (
           <ul className="list">
             {[...intakes].reverse().map((i) => (
-              <li key={i.id}>
+              <li
+                key={i.id}
+                className="intake-row"
+                role="button"
+                tabIndex={0}
+                aria-label={`Ubah catatan ${i.productName}`}
+                onClick={() => setSheet({ kind: "edit", intake: i })}
+                onKeyDown={(e) => e.key === "Enter" && setSheet({ kind: "edit", intake: i })}
+              >
                 <span className="time-badge">{fmtTime(i.takenAt, tz)}</span>
                 <div className="grow">
                   <div>
@@ -285,13 +348,24 @@ export function TodayPage({ goTo }: { goTo: (tab: "pasien" | "produk" | "jadwal"
                     {i.note ? ` · ${i.note}` : ""}
                   </div>
                 </div>
-                <button className="btn ghost small" aria-label="Hapus" onClick={() => remove(i.id, i.productName)}>
+                <span className="muted" aria-hidden>
+                  ✎
+                </span>
+                <button
+                  className="btn ghost small"
+                  aria-label="Hapus"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    remove(i.id, i.productName);
+                  }}
+                >
                   ✕
                 </button>
               </li>
             ))}
           </ul>
         )}
+        {intakes.length > 0 && <p className="tiny muted" style={{ marginTop: 6 }}>Ketuk catatan untuk mengubah jumlah, jam, atau produk.</p>}
       </div>
 
       {(day?.symptoms.length ?? 0) > 0 && (
@@ -356,7 +430,9 @@ export function TodayPage({ goTo }: { goTo: (tab: "pasien" | "produk" | "jadwal"
           }}
         />
       )}
+      {sheet?.kind === "edit" && <LogIntakeSheet editing={sheet.intake} onClose={() => setSheet(null)} />}
       {sheet?.kind === "symptom" && <SymptomSheet onClose={() => setSheet(null)} />}
+      {celebrating.length > 0 && <Confetti />}
       {confirmAi &&
         (() => {
           const info = lastAi(confirmAi);

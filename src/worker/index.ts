@@ -1,8 +1,9 @@
 import { z } from "zod";
 import { intakeFromProduct, sumIntakes } from "../shared/intake";
-import { NUTRIENT_KEYS, formatNutrient, type NutrientMap } from "../shared/nutrients";
+import { NUTRIENT_KEYS, formatNutrient, scaleNutrients, type NutrientMap } from "../shared/nutrients";
+import { computeTargets } from "../shared/targets";
 import { addDays, isValidTimeZone, localParts } from "../shared/time";
-import { LAB_FIELDS, RED_FLAGS, type Member } from "../shared/types";
+import { LAB_FIELDS, RED_FLAGS, type Intake, type Member } from "../shared/types";
 import { AiError, estimateDrink, evaluateIntake, modelFor, readLabel, suggestIntake } from "./ai";
 import { checkPassword, clearLoginFailures, issueToken, loginBlocked, recordLoginFailure, verifyToken } from "./auth";
 import { buildAiContext } from "./context";
@@ -13,6 +14,7 @@ import {
   getProfileMeta,
   getSetting,
   getVapidKeys,
+  intakeFromRow,
   listEvaluations,
   listIntakes,
   listLabs,
@@ -173,6 +175,7 @@ const prefsSchema = z.object({
   missed: z.boolean(),
   alerts: z.boolean(),
   activity: z.boolean(),
+  achievements: z.boolean().default(true),
 });
 
 const imageSchema = z.object({
@@ -302,7 +305,7 @@ route("GET", "/api/day", async ({ env, url }) => {
 
 route("GET", "/api/history", async ({ env, url }) => {
   const { local } = await today(env);
-  const days = Math.min(Math.max(Number(url.searchParams.get("days") ?? 14), 1), 90);
+  const days = Math.min(Math.max(Number(url.searchParams.get("days") ?? 14), 1), 400);
   const to = url.searchParams.get("to") ?? local.date;
   const from = addDays(to, -(days - 1));
   const [intakes, symptoms] = await Promise.all([listIntakes(env.DB, from, to), listSymptoms(env.DB, from, to)]);
@@ -323,38 +326,114 @@ route("GET", "/api/history", async ({ env, url }) => {
 });
 
 // Asupan
+interface ResolvedIntake {
+  productId: string | null;
+  productName: string;
+  amount: number;
+  unit: "ml" | "porsi";
+  volumeMl: number;
+  nutrients: NutrientMap;
+}
+
+/**
+ * Menghitung kandungan satu catatan minum. Untuk produk yang sudah dihapus
+ * (saat mengedit catatan lama), kandungan lama diskalakan sesuai jumlah baru.
+ */
+async function resolveIntake(env: Env, data: z.infer<typeof intakeSchema>, existing?: Intake): Promise<ResolvedIntake> {
+  if (data.productId !== null) {
+    const product = await getProduct(env.DB, data.productId);
+    if (product) {
+      try {
+        const { volumeMl, nutrients } = intakeFromProduct(product, data.amount, data.unit);
+        return { productId: product.id, productName: product.name, amount: data.amount, unit: data.unit, volumeMl, nutrients };
+      } catch (e) {
+        throw new HttpError(400, (e as Error).message);
+      }
+    }
+    if (!existing || existing.productId !== data.productId || existing.unit !== data.unit) {
+      throw new HttpError(404, "Produk tidak ditemukan.");
+    }
+    const factor = data.amount / existing.amount;
+    return {
+      productId: existing.productId,
+      productName: existing.productName,
+      amount: data.amount,
+      unit: data.unit,
+      volumeMl: existing.volumeMl * factor,
+      nutrients: scaleNutrients(existing.nutrients, factor),
+    };
+  }
+  let nutrients = data.nutrients;
+  if (!nutrients && existing && existing.productId === null && existing.volumeMl > 0) {
+    nutrients = scaleNutrients(existing.nutrients, data.volumeMl / existing.volumeMl);
+  }
+  return {
+    productId: null,
+    productName: data.productName,
+    amount: data.volumeMl,
+    unit: "ml",
+    volumeMl: data.volumeMl,
+    nutrients: nutrients ?? {},
+  };
+}
+
+function parseTakenAt(raw: string | undefined): Date {
+  const takenAt = raw ? new Date(raw) : new Date();
+  if (takenAt.getTime() > Date.now() + 5 * 60_000) throw new HttpError(400, "Waktu minum tidak boleh di masa depan.");
+  return takenAt;
+}
+
+/** Total hari itu tanpa satu catatan (untuk membandingkan sebelum/sesudah). */
+async function dayTotals(env: Env, localDate: string, excludeId?: string) {
+  const intakes = (await listIntakes(env.DB, localDate, localDate)).filter((i) => i.id !== excludeId);
+  return sumIntakes(intakes);
+}
+
+const CHEERS = [
+  "Luar biasa, terus semangat!",
+  "Hebat! Setiap tegukan adalah kekuatan.",
+  "Kerja keras hari ini terbayar. Semangat!",
+  "Bangga sekali — pertahankan ya!",
+];
+
+/** Kirim notifikasi penyemangat bila catatan ini membuat target energi/protein hari ini tercapai. */
+async function celebrateIfReached(
+  env: Env,
+  me: Member,
+  localDate: string,
+  before: ReturnType<typeof sumIntakes>,
+) {
+  const profile = await getProfile(env.DB);
+  if (localDate !== localParts(new Date(), profile.timezone).date) return;
+  const [weights, labs] = await Promise.all([listWeights(env.DB), listLabs(env.DB)]);
+  const targets = computeTargets({ profile, weights, labs, today: localDate });
+  const after = await dayTotals(env, localDate);
+  const reached: string[] = [];
+  const crossed = (b: number | undefined, a: number | undefined, t: number | undefined) =>
+    t !== undefined && (b ?? 0) < t && (a ?? 0) >= t;
+  if (crossed(before.nutrients.energy_kcal, after.nutrients.energy_kcal, targets.energy?.target)) reached.push("energi");
+  if (crossed(before.nutrients.protein_g, after.nutrients.protein_g, targets.protein?.target)) reached.push("protein");
+  if (!reached.length) return;
+  await notify(
+    env,
+    "achievements",
+    {
+      title: `🎉 ${profile.name || "Pasien"} mencapai target ${reached.join(" & ")} hari ini!`,
+      body: CHEERS[Math.floor(Math.random() * CHEERS.length)],
+      tag: `ach-${localDate}-${reached.join("-")}`,
+      url: "/",
+    },
+    { excludeMemberId: me.id },
+  );
+}
+
 route("POST", "/api/intakes", async ({ env, req, me }) => {
   const data = await body(req, intakeSchema);
   const { profile } = await today(env);
-  const takenAt = data.takenAt ? new Date(data.takenAt) : new Date();
-  if (takenAt.getTime() > Date.now() + 5 * 60_000) throw new HttpError(400, "Waktu minum tidak boleh di masa depan.");
+  const takenAt = parseTakenAt(data.takenAt);
   const localDate = localParts(takenAt, profile.timezone).date;
-
-  let productId: string | null = null;
-  let productName: string;
-  let amount: number;
-  let unit: "ml" | "porsi";
-  let volumeMl: number;
-  let nutrients: NutrientMap;
-  if (data.productId !== null) {
-    const product = await getProduct(env.DB, data.productId);
-    if (!product) throw new HttpError(404, "Produk tidak ditemukan.");
-    try {
-      ({ volumeMl, nutrients } = intakeFromProduct(product, data.amount, data.unit));
-    } catch (e) {
-      throw new HttpError(400, (e as Error).message);
-    }
-    productId = product.id;
-    productName = product.name;
-    amount = data.amount;
-    unit = data.unit;
-  } else {
-    productName = data.productName;
-    amount = data.volumeMl;
-    unit = "ml";
-    volumeMl = data.volumeMl;
-    nutrients = data.nutrients ?? {};
-  }
+  const before = await dayTotals(env, localDate);
+  const { productId, productName, amount, unit, volumeMl, nutrients } = await resolveIntake(env, data);
 
   const id = newId();
   await env.DB.prepare(
@@ -364,6 +443,7 @@ route("POST", "/api/intakes", async ({ env, req, me }) => {
     .bind(id, takenAt.toISOString(), localDate, productId, productName, amount, unit, volumeMl, JSON.stringify(nutrients), data.note, me.id)
     .run();
 
+  await celebrateIfReached(env, me, localDate, before);
   const kcal = nutrients.energy_kcal ? ` (${formatNutrient("energy_kcal", nutrients.energy_kcal)})` : "";
   await notify(
     env,
@@ -377,6 +457,26 @@ route("POST", "/api/intakes", async ({ env, req, me }) => {
     { excludeMemberId: me.id },
   );
   return jsonResponse({ id }, 201);
+});
+
+route("PUT", "/api/intakes/:id", async ({ env, req, params, me }) => {
+  const data = await body(req, intakeSchema);
+  const row = await env.DB.prepare("SELECT * FROM intakes WHERE id = ?").bind(params.id).first<Record<string, unknown>>();
+  if (!row) throw new HttpError(404, "Catatan minum tidak ditemukan (mungkin sudah dihapus).");
+  const existing = intakeFromRow(row);
+  const { profile } = await today(env);
+  const takenAt = data.takenAt ? parseTakenAt(data.takenAt) : new Date(existing.takenAt);
+  const localDate = localParts(takenAt, profile.timezone).date;
+  const before = await dayTotals(env, localDate, existing.id);
+  const r = await resolveIntake(env, data, existing);
+  await env.DB.prepare(
+    `UPDATE intakes SET taken_at = ?, local_date = ?, product_id = ?, product_name = ?, amount = ?, unit = ?, volume_ml = ?,
+       nutrients = ?, note = ? WHERE id = ?`,
+  )
+    .bind(takenAt.toISOString(), localDate, r.productId, r.productName, r.amount, r.unit, r.volumeMl, JSON.stringify(r.nutrients), data.note, existing.id)
+    .run();
+  await celebrateIfReached(env, me, localDate, before);
+  return jsonResponse({ id: existing.id });
 });
 
 route("DELETE", "/api/intakes/:id", async ({ env, params }) => {

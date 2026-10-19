@@ -154,6 +154,7 @@ export function Meter({
   unit,
   expected,
   sub,
+  celebrate,
 }: {
   label: string;
   value: number;
@@ -161,8 +162,11 @@ export function Meter({
   unit: string;
   expected?: number | null;
   sub?: ReactNode;
+  /** Baru saja tercapai: jalankan animasi perayaan. */
+  celebrate?: boolean;
 }) {
   const pct = target ? (value / target) * 100 : null;
+  const stage = pct === null ? null : pct >= 100 ? "done" : pct >= NEAR_PCT ? "near" : null;
   const midDay = expected !== null && expected !== undefined && expected > 0 && expected < 1;
   let pill: ReactNode = null;
   if (pct !== null) {
@@ -172,7 +176,7 @@ export function Meter({
     else pill = <StatusPill status="cukup" label="Sesuai jadwal" />;
   }
   return (
-    <div className="meter">
+    <div className={["meter", stage, celebrate && stage === "done" ? "celebrate" : ""].filter(Boolean).join(" ")}>
       <div className="meter-top">
         <span className="meter-label">{label}</span>
         <span className="meter-value">
@@ -203,7 +207,49 @@ export function Meter({
         </span>
         {pill}
       </div>
+      {stage === "near" && (
+        <div className="meter-cheer" role="status">
+          Sedikit lagi! Tinggal {fmt(target! - value)} {unit} lagi 💪
+        </div>
+      )}
+      {stage === "done" && (
+        <div className="meter-cheer" role="status">
+          Target {label.toLowerCase()} tercapai — hebat! 🎉
+        </div>
+      )}
       {sub}
+    </div>
+  );
+}
+
+/** Persentase target yang dianggap "hampir tercapai". */
+export const NEAR_PCT = 85;
+
+const CONFETTI_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#6250d6"];
+
+/** Hujan konfeti singkat saat target tercapai. */
+export function Confetti() {
+  const pieces = Array.from({ length: 48 }, (_, i) => ({
+    left: Math.random() * 100,
+    delay: Math.random() * 0.6,
+    duration: 1.8 + Math.random() * 1.2,
+    color: CONFETTI_COLORS[i % CONFETTI_COLORS.length],
+    rotate: Math.random() * 360,
+  }));
+  return (
+    <div className="confetti" aria-hidden>
+      {pieces.map((p, i) => (
+        <i
+          key={i}
+          style={{
+            left: `${p.left}%`,
+            background: p.color,
+            animationDelay: `${p.delay}s`,
+            animationDuration: `${p.duration}s`,
+            transform: `rotate(${p.rotate}deg)`,
+          }}
+        />
+      ))}
     </div>
   );
 }

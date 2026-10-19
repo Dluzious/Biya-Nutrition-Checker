@@ -1,3 +1,4 @@
+import { useState, type ReactNode } from "react";
 import type { Evaluation, EvaluationOutput, SuggestionOutput } from "../../shared/types";
 import { useApp } from "../store";
 import { StatusPill, fmtDateTime } from "./ui";
@@ -24,7 +25,53 @@ function List({ title, items }: { title: string; items: string[] }) {
   );
 }
 
-export function EvaluationCard({ evaluation }: { evaluation: Evaluation }) {
+function Cheer({ text }: { text?: string }) {
+  if (!text) return null;
+  return (
+    <p className="cheer">
+      <span aria-hidden>💪</span> {text}
+    </p>
+  );
+}
+
+/** Kartu yang bisa dibuka/ditutup: ringkasan selalu tampil, rincian di dalam. */
+function Collapsible({
+  title,
+  badge,
+  summary,
+  children,
+  defaultOpen,
+}: {
+  title: string;
+  badge?: ReactNode;
+  summary: ReactNode;
+  children: ReactNode;
+  defaultOpen: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="card ai-card">
+      <button type="button" className="collapse-head" aria-expanded={open} onClick={() => setOpen(!open)}>
+        <h2>{title}</h2>
+        <span className="row" style={{ gap: 6 }}>
+          {badge}
+          <span className={`chevron${open ? " open" : ""}`} aria-hidden>
+            ▾
+          </span>
+        </span>
+      </button>
+      {summary}
+      <div className={`collapse-body${open ? " open" : ""}`}>
+        <div>{children}</div>
+      </div>
+      <button type="button" className="btn ghost sm collapse-toggle" onClick={() => setOpen(!open)}>
+        {open ? "Tutup rincian ▴" : "Lihat rincian ▾"}
+      </button>
+    </div>
+  );
+}
+
+export function EvaluationCard({ evaluation, defaultOpen = false }: { evaluation: Evaluation; defaultOpen?: boolean }) {
   const { boot } = useApp();
   const meta = (
     <div className="tiny muted" style={{ marginTop: 6 }}>
@@ -36,39 +83,49 @@ export function EvaluationCard({ evaluation }: { evaluation: Evaluation }) {
   if (evaluation.kind === "saran") {
     const o = evaluation.output as SuggestionOutput;
     return (
-      <div className="card ai-card">
-        <div className="card-header">
-          <h2>Saran AI berikutnya</h2>
-        </div>
-        <p>
-          <strong>{o.saran_utama}</strong>
-        </p>
+      <Collapsible
+        title="Saran ahli gizi AI"
+        defaultOpen={defaultOpen}
+        summary={
+          <>
+            <p>
+              <strong>{o.saran_utama}</strong>
+            </p>
+            <Cheer text={o.semangat} />
+          </>
+        }
+      >
         <List title="Rincian" items={o.rincian} />
         <List title="Perhatikan" items={o.catatan} />
         {meta}
-      </div>
+      </Collapsible>
     );
   }
 
   const o = evaluation.output as EvaluationOutput;
   const s = EVAL_STATUS[o.status] ?? EVAL_STATUS.kurang;
   return (
-    <div className="card ai-card">
-      <div className="card-header">
-        <h2>Evaluasi AI</h2>
-        <StatusPill status={s.status} label={s.label} />
-      </div>
-      {o.tanda_bahaya.length > 0 && (
-        <div className="banner critical">
-          <strong>Tanda bahaya</strong>
-          <ul>
-            {o.tanda_bahaya.map((t, i) => (
-              <li key={i}>{t}</li>
-            ))}
-          </ul>
-        </div>
-      )}
-      <p>{o.ringkasan}</p>
+    <Collapsible
+      title="Evaluasi ahli gizi AI"
+      defaultOpen={defaultOpen}
+      badge={<StatusPill status={s.status} label={s.label} />}
+      summary={
+        <>
+          {o.tanda_bahaya.length > 0 && (
+            <div className="banner critical">
+              <strong>Tanda bahaya</strong>
+              <ul>
+                {o.tanda_bahaya.map((t, i) => (
+                  <li key={i}>{t}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+          <p>{o.ringkasan}</p>
+          <Cheer text={o.semangat} />
+        </>
+      }
+    >
       <List title="Temuan" items={o.temuan} />
       <List title="Saran" items={o.saran} />
       {o.rencana_asupan_berikutnya && (
@@ -79,6 +136,6 @@ export function EvaluationCard({ evaluation }: { evaluation: Evaluation }) {
       )}
       <List title="Tanyakan ke dokter" items={o.pertanyaan_untuk_dokter} />
       {meta}
-    </div>
+    </Collapsible>
   );
 }

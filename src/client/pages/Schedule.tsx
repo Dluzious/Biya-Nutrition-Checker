@@ -12,6 +12,7 @@ const PREF_LABELS: { key: keyof PushPrefs; label: string; hint: string }[] = [
   { key: "missed", label: "Jadwal terlewat", hint: "Bila belum ada catatan minum setelah jadwal" },
   { key: "alerts", label: "Tanda bahaya", hint: "Bila ada gejala berbahaya yang dicatat" },
   { key: "activity", label: "Aktivitas minum", hint: "Setiap ada catatan minum dari anggota lain" },
+  { key: "achievements", label: "Target tercapai 🎉", hint: "Saat target energi/protein harian tercapai" },
 ];
 
 function NotificationCard() {

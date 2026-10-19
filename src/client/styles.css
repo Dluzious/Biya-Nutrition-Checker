@@ -914,3 +914,170 @@ details > summary {
 .invalid-group input {
   border-color: var(--critical) !important;
 }
+
+/* Kartu AI yang bisa dibuka/ditutup */
+.collapse-head {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0;
+  margin-bottom: 8px;
+  border: 0;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+
+.collapse-head h2 {
+  margin: 0;
+}
+
+.chevron {
+  display: inline-block;
+  font-size: 1.1rem;
+  color: var(--muted);
+  transition: transform 0.25s ease;
+}
+
+.chevron.open {
+  transform: rotate(180deg);
+}
+
+.collapse-body {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.3s ease;
+}
+
+.collapse-body > div {
+  overflow: hidden;
+}
+
+.collapse-body.open {
+  grid-template-rows: 1fr;
+}
+
+.collapse-toggle {
+  margin: 4px 0 -6px -10px;
+  color: var(--accent);
+}
+
+.cheer {
+  background: color-mix(in srgb, var(--warning) 16%, var(--surface));
+  border-left: 3px solid var(--warning);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-weight: 500;
+}
+
+/* Meter yang hampir/sudah tercapai */
+.meter.near .meter-fill {
+  background-image: linear-gradient(
+    110deg,
+    var(--accent) 0%,
+    var(--accent) 40%,
+    color-mix(in srgb, var(--accent) 55%, #fff) 50%,
+    var(--accent) 60%,
+    var(--accent) 100%
+  );
+  background-size: 250% 100%;
+  animation: meter-shimmer 1.8s linear infinite;
+}
+
+.meter.done .meter-fill {
+  background: var(--good);
+}
+
+.meter.done .meter-track {
+  background: color-mix(in srgb, var(--good) 22%, var(--surface));
+}
+
+.meter.done.celebrate .meter-track {
+  animation: meter-pop 0.6s ease-out 2;
+}
+
+@keyframes meter-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -150% 0;
+  }
+}
+
+@keyframes meter-pop {
+  0% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--good) 60%, transparent);
+  }
+  50% {
+    transform: scale(1.03, 1.4);
+  }
+  100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 12px color-mix(in srgb, var(--good) 0%, transparent);
+  }
+}
+
+.meter-cheer {
+  margin-top: 6px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  animation: toast-in 0.3s ease-out;
+}
+
+.meter.near .meter-cheer {
+  color: var(--accent);
+}
+
+.meter.done .meter-cheer {
+  color: var(--good-text);
+}
+
+/* Konfeti saat target tercapai */
+.confetti {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  /* Di bawah notifikasi (z-index 60) agar tulisannya tetap terbaca. */
+  z-index: 55;
+  overflow: hidden;
+}
+
+.confetti i {
+  position: absolute;
+  top: -12px;
+  width: 8px;
+  height: 14px;
+  border-radius: 2px;
+  opacity: 0.9;
+  animation: confetti-fall 2.4s ease-in forwards;
+}
+
+@keyframes confetti-fall {
+  to {
+    transform: translateY(105vh) rotate(720deg);
+    opacity: 0.7;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .meter.near .meter-fill,
+  .meter.done.celebrate .meter-track,
+  .confetti i,
+  .collapse-body,
+  .chevron {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+.intake-row {
+  cursor: pointer;
+}
+
+.intake-row:active {
+  background: var(--surface-2);
+}

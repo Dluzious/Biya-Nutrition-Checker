@@ -251,8 +251,8 @@ export async function listEvaluations(db: D1Database, limit: number, localDate?:
 }
 
 export const DEFAULT_PREFS: Record<Member["role"], PushPrefs> = {
-  pasien: { reminders: true, missed: false, alerts: true, activity: false },
-  pendamping: { reminders: true, missed: true, alerts: true, activity: true },
+  pasien: { reminders: true, missed: false, alerts: true, activity: false, achievements: true },
+  pendamping: { reminders: true, missed: true, alerts: true, activity: true, achievements: true },
 };
 
 export interface SubscriptionRow {
@@ -273,7 +273,8 @@ export async function listSubscriptions(db: D1Database): Promise<SubscriptionRow
     endpoint: String(r.endpoint),
     p256dh: String(r.p256dh),
     auth: String(r.auth),
-    prefs: json(r.prefs, DEFAULT_PREFS.pendamping),
+    // Langganan lama belum punya kunci `achievements`; kunci yang hilang memakai nilai bawaan (aktif).
+    prefs: { ...DEFAULT_PREFS.pendamping, ...json<Partial<PushPrefs>>(r.prefs, {}) },
     device: String(r.device ?? ""),
   }));
 }
