@@ -1,0 +1,26 @@
+name = "biya-nutrition"
+main = "src/worker/index.ts"
+compatibility_date = "2026-09-01"
+compatibility_flags = ["nodejs_compat"]
+
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*", "/__scheduled"]
+
+# Pengingat & pemantauan jadwal dicek setiap menit.
+[triggers]
+crons = ["* * * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "biya-nutrition"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"
+
+[vars]
+ANTHROPIC_MODEL = "claude-opus-5-5"
+
+[observability]
+enabled = true

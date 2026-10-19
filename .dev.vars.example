@@ -1,0 +1,3 @@
+# Salin menjadi .dev.vars untuk menjalankan server secara lokal.
+ANTHROPIC_API_KEY=sk-ant-...
+FAMILY_PASSWORD=ganti-dengan-kata-sandi-keluarga
