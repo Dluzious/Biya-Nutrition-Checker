@@ -160,6 +160,7 @@ export async function buildAiContext(env: Env, date: string, now = new Date()) {
         bentuk: p.form,
         takaran_saji: p.servingLabel,
         volume_saji_ml: p.servingVolumeMl,
+        sumber_data: p.source === "estimasi" ? "perkiraan AI (bukan label)" : p.source === "ai" ? "label kemasan (foto)" : "diisi manual",
         per_saji: compactNutrients(p.nutrients),
       })),
     riwayat_7_hari: history,

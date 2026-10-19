@@ -308,6 +308,105 @@ export async function readLabel(env: Env, images: ImageInput[]): Promise<Product
 }
 
 // ---------------------------------------------------------------------------
+// Perkiraan kandungan minuman umum (jus, air kelapa, kaldu, dll.)
+
+const ESTIMATE_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["is_liquid", "name", "assumptions", "nutrients", "cautions", "confidence"],
+  properties: {
+    is_liquid: { type: "boolean" },
+    name: { type: "string" },
+    assumptions: { type: "array", items: { type: "string" } },
+    nutrients: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["key", "amount"],
+        properties: {
+          key: { type: "string", enum: NUTRIENT_KEYS },
+          amount: { type: "number" },
+        },
+      },
+    },
+    cautions: { type: "array", items: { type: "string" } },
+    confidence: { type: "string", enum: ["tinggi", "sedang", "rendah"] },
+  },
+} as const;
+
+const EstimateSchema = z.object({
+  is_liquid: z.boolean(),
+  name: z.string(),
+  assumptions: z.array(z.string()),
+  nutrients: z.array(z.object({ key: z.string(), amount: z.number() })),
+  cautions: z.array(z.string()),
+  confidence: z.enum(["tinggi", "sedang", "rendah"]),
+});
+
+const ESTIMATE_UNITS = Object.values(NUTRIENT_BY_KEY)
+  .map((n) => `- ${n.key}: ${n.label} (${n.unit})`)
+  .join("\n");
+
+const ESTIMATE_SYSTEM = `Kamu memperkirakan kandungan gizi minuman atau makanan cair yang umum di Indonesia (mis. jus mangga, jus alpukat, air kelapa, susu UHT, kaldu ayam, sari kacang hijau, teh manis) untuk aplikasi pemantau gizi pasien yang menjalani diet cair.
+
+Aturan:
+- Hitung untuk VOLUME yang disebutkan pengguna, bukan per 100 ml.
+- Pakai pengetahuanmu tentang Tabel Komposisi Pangan Indonesia (TKPI) dan USDA FoodData Central.
+- Bila resep tidak disebutkan (gula, susu kental manis, es, buah:air), pakai cara penyajian paling umum di Indonesia dan tulis asumsinya di assumptions (singkat, bahasa Indonesia).
+- Isi nutrients dengan angka dalam satuan persis berikut, hanya untuk zat gizi yang bisa diperkirakan wajar; lewati yang tidak tahu:
+${ESTIMATE_UNITS}
+- Minimal isi energy_kcal, protein_g, carb_g, fat_g, dan sugar_g bila relevan.
+- name: nama singkat yang jelas, sertakan asumsi utama (mis. "Jus mangga (tanpa gula)").
+- cautions: maksimal 2 catatan singkat tentang kecocokan minuman ini untuk pasien sesuai diagnosis dan instruksi diet yang diberikan (mis. keasaman, ampas/serat, gula tinggi, rendah protein dibanding formula). Kosongkan bila tidak ada.
+- is_liquid: false bila yang disebutkan bukan minuman/makanan cair.
+- confidence: seberapa yakin perkiraanmu.`;
+
+export interface DrinkEstimate {
+  isLiquid: boolean;
+  name: string;
+  volumeMl: number;
+  nutrients: NutrientMap;
+  assumptions: string[];
+  cautions: string[];
+  confidence: "tinggi" | "sedang" | "rendah";
+}
+
+export async function estimateDrink(
+  env: Env,
+  input: { description: string; volumeMl: number; diagnosis: string; dietOrder: string },
+): Promise<DrinkEstimate> {
+  const r = await callClaude(env, {
+    system: ESTIMATE_SYSTEM,
+    content: [
+      {
+        type: "text",
+        text: `Minuman: ${input.description}\nVolume: ${input.volumeMl} ml\nDiagnosis pasien: ${input.diagnosis || "-"}\nInstruksi diet: ${input.dietOrder || "-"}`,
+      },
+    ],
+    schema: ESTIMATE_SCHEMA,
+    validator: EstimateSchema,
+    effort: "medium",
+    timeoutMs: 90_000,
+  });
+  const nutrients: NutrientMap = {};
+  for (const n of r.nutrients) {
+    if (isNutrientKey(n.key) && Number.isFinite(n.amount) && n.amount >= 0) {
+      nutrients[n.key] = Math.round(n.amount * 1000) / 1000;
+    }
+  }
+  return {
+    isLiquid: r.is_liquid,
+    name: r.name,
+    volumeMl: input.volumeMl,
+    nutrients,
+    assumptions: r.assumptions,
+    cautions: r.cautions,
+    confidence: r.confidence,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Evaluasi kecukupan & saran asupan berikutnya
 
 const CLINICAL_CONTEXT = `Kamu adalah asisten gizi klinis di aplikasi pemantau asupan seorang pasien kanker perempuan. Diagnosis dan instruksi diet dari dokter ada di data (profil.diagnosis, profil.instruksi_diet) — umumnya DIET CAIR dengan formula oral (ONS) seperti Nutrican dan Fresubin. Pembacamu adalah pasien dan keluarganya (pendamping), bukan tenaga kesehatan.

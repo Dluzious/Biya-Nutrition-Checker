@@ -1,10 +1,29 @@
 import { useMemo, useState } from "react";
 import { intakeFromProduct } from "../../shared/intake";
+import { scaleNutrients, type NutrientKey, type NutrientMap } from "../../shared/nutrients";
 import { localParts, zonedToUtc } from "../../shared/time";
-import { RED_FLAGS, type IntakeUnit, type RedFlagKey } from "../../shared/types";
+import { RED_FLAGS, type IntakeUnit, type Product, type RedFlagKey } from "../../shared/types";
 import { api } from "../api";
 import { useApp } from "../store";
-import { Field, NumberInput, Segmented, Sheet, fmt } from "./ui";
+import { Field, NumberInput, Segmented, Sheet, Spinner, fmt } from "./ui";
+
+interface DrinkEstimate {
+  isLiquid: boolean;
+  name: string;
+  volumeMl: number;
+  nutrients: NutrientMap;
+  assumptions: string[];
+  cautions: string[];
+  confidence: "tinggi" | "sedang" | "rendah";
+}
+
+const EDITABLE: { key: NutrientKey; label: string; unit: string }[] = [
+  { key: "energy_kcal", label: "Energi", unit: "kkal" },
+  { key: "protein_g", label: "Protein", unit: "g" },
+  { key: "carb_g", label: "Karbohidrat", unit: "g" },
+  { key: "fat_g", label: "Lemak", unit: "g" },
+  { key: "sugar_g", label: "Gula", unit: "g" },
+];
 
 export interface IntakePrefill {
   productId: string;
@@ -15,7 +34,7 @@ export interface IntakePrefill {
 const OTHER = "__other__";
 
 export function LogIntakeSheet({ prefill, onClose }: { prefill?: IntakePrefill; onClose: () => void }) {
-  const { boot, date, isToday, run } = useApp();
+  const { boot, date, isToday, run, toast } = useApp();
   const tz = boot.profile.timezone;
   const products = boot.products.filter((p) => p.active);
   const first = prefill ? products.find((p) => p.id === prefill.productId) : products[0];
@@ -32,15 +51,40 @@ export function LogIntakeSheet({ prefill, onClose }: { prefill?: IntakePrefill; 
   const [note, setNote] = useState("");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  // Perkiraan AI untuk minuman di luar daftar produk; kandungannya untuk estimate.volumeMl.
+  const [estimate, setEstimate] = useState<DrinkEstimate | null>(null);
+  const [estNutrients, setEstNutrients] = useState<NutrientMap>({});
+  const [estimating, setEstimating] = useState(false);
+  const [saveAsProduct, setSaveAsProduct] = useState(true);
 
   const preview = useMemo(() => {
-    if (!product || !amount) return null;
+    if (!amount) return null;
+    if (productId === OTHER) {
+      return estimate ? { volumeMl: amount, nutrients: scaleNutrients(estNutrients, amount / estimate.volumeMl) } : null;
+    }
+    if (!product) return null;
     try {
       return intakeFromProduct(product, amount, unit);
     } catch {
       return null;
     }
-  }, [product, amount, unit]);
+  }, [product, productId, amount, unit, estimate, estNutrients]);
+
+  const runEstimate = async () => {
+    if (!amount || otherName.trim().length < 2) return;
+    setEstimating(true);
+    try {
+      const r = await api<{ estimate: DrinkEstimate }>("/api/ai/estimate", {
+        body: { description: otherName.trim(), volumeMl: amount },
+      });
+      setEstimate(r.estimate);
+      setEstNutrients(r.estimate.nutrients);
+      if (!r.estimate.isLiquid) toast("Sepertinya itu bukan minuman/makanan cair — periksa lagi.", "error");
+    } catch (e) {
+      toast((e as Error).message, "error");
+    }
+    setEstimating(false);
+  };
 
   const choose = (id: string) => {
     setProductId(id);
@@ -67,16 +111,39 @@ export function LogIntakeSheet({ prefill, onClose }: { prefill?: IntakePrefill; 
     if (!amount) return;
     setSaving(true);
     const takenAt = customTime ? zonedToUtc(date, time, tz).toISOString() : undefined;
-    const ok = await run(
-      () =>
-        api("/api/intakes", {
-          body:
-            productId === OTHER
-              ? { productId: null, productName: otherName || "Cairan lain", volumeMl: amount, takenAt, note }
-              : { productId, amount, unit, takenAt, note },
-        }),
-      "Asupan tercatat",
-    );
+    const ok = await run(async () => {
+      if (productId !== OTHER) {
+        return api("/api/intakes", { body: { productId, amount, unit, takenAt, note } });
+      }
+      if (estimate && saveAsProduct) {
+        const { product: created } = await api<{ product: Product }>("/api/products", {
+          body: {
+            name: estimate.name,
+            brand: "",
+            form: "cair",
+            servingLabel: `${estimate.volumeMl} ml (perkiraan)`,
+            servingVolumeMl: estimate.volumeMl,
+            servingGrams: null,
+            preparation: "",
+            nutrients: estNutrients,
+            notes: ["Perkiraan AI dari nama minuman, bukan dari label.", ...estimate.assumptions].join("\n"),
+            source: "estimasi",
+            active: true,
+          },
+        });
+        return api("/api/intakes", { body: { productId: created.id, amount, unit: "ml", takenAt, note } });
+      }
+      return api("/api/intakes", {
+        body: {
+          productId: null,
+          productName: estimate?.name ?? (otherName.trim() || "Cairan lain"),
+          volumeMl: amount,
+          nutrients: preview?.nutrients,
+          takenAt,
+          note,
+        },
+      });
+    }, "Asupan tercatat");
     setSaving(false);
     if (ok) setSaved(true);
   };
@@ -123,8 +190,18 @@ export function LogIntakeSheet({ prefill, onClose }: { prefill?: IntakePrefill; 
       )}
 
       {productId === OTHER && (
-        <Field label="Nama cairan" hint="Dihitung sebagai cairan saja (tanpa kalori).">
-          <input type="text" value={otherName} onChange={(e) => setOtherName(e.target.value)} />
+        <Field
+          label="Nama minuman"
+          hint="Sebutkan cara buatnya bila perlu, mis. “jus mangga tanpa gula”, “air kelapa muda”, “kaldu ayam”."
+        >
+          <input
+            type="text"
+            value={otherName}
+            onChange={(e) => {
+              setOtherName(e.target.value);
+              setEstimate(null);
+            }}
+          />
         </Field>
       )}
 
@@ -163,6 +240,66 @@ export function LogIntakeSheet({ prefill, onClose }: { prefill?: IntakePrefill; 
           </button>
         ))}
       </div>
+
+      {productId === OTHER && !estimate && (
+        <div style={{ marginBottom: 12 }}>
+          <button
+            type="button"
+            className="btn block"
+            disabled={estimating || !amount || otherName.trim().length < 2 || !boot.ai.ready}
+            onClick={runEstimate}
+          >
+            {estimating ? (
+              <>
+                <Spinner /> Menghitung…
+              </>
+            ) : (
+              "Hitung kalori & gizi dengan AI"
+            )}
+          </button>
+          <p className="tiny muted" style={{ marginTop: 6 }}>
+            Tanpa dihitung, minuman ini dicatat sebagai cairan saja (0 kkal) — cocok untuk air putih atau teh tawar.
+          </p>
+        </div>
+      )}
+
+      {productId === OTHER && estimate && (
+        <div className={`banner ${estimate.confidence === "tinggi" ? "info" : "warning"}`}>
+          <strong>
+            {estimate.name} — perkiraan AI (keyakinan {estimate.confidence})
+          </strong>
+          {estimate.assumptions.length > 0 && <div className="small secondary">Asumsi: {estimate.assumptions.join("; ")}</div>}
+          {estimate.cautions.length > 0 && (
+            <ul className="small">
+              {estimate.cautions.map((c, i) => (
+                <li key={i}>{c}</li>
+              ))}
+            </ul>
+          )}
+          <details style={{ marginTop: 6 }}>
+            <summary className="small">Koreksi angka (untuk {estimate.volumeMl} ml)</summary>
+            <div className="grid-2" style={{ marginTop: 6 }}>
+              {EDITABLE.map((f) => (
+                <Field key={f.key} label={`${f.label} (${f.unit})`}>
+                  <NumberInput
+                    value={estNutrients[f.key] ?? null}
+                    onChange={(v) => {
+                      const next = { ...estNutrients };
+                      if (v === null) delete next[f.key];
+                      else next[f.key] = v;
+                      setEstNutrients(next);
+                    }}
+                  />
+                </Field>
+              ))}
+            </div>
+          </details>
+          <label className="check">
+            <input type="checkbox" checked={saveAsProduct} onChange={(e) => setSaveAsProduct(e.target.checked)} />
+            <span className="small">Simpan sebagai produk agar lain kali tinggal dipilih (tanpa AI)</span>
+          </label>
+        </div>
+      )}
 
       {preview && (
         <div className="card" style={{ background: "var(--surface-2)" }}>

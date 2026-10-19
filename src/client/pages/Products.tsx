@@ -275,7 +275,7 @@ export function ProductsPage() {
           >
             <div className="card-header">
               <h2>{p.name}</h2>
-              <span className="tiny muted">{p.active ? (p.source === "ai" ? "dari foto" : "manual") : "tidak dipakai"}</span>
+              <span className="tiny muted">{p.active ? (p.source === "ai" ? "dari foto" : p.source === "estimasi" ? "perkiraan AI" : "manual") : "tidak dipakai"}</span>
             </div>
             <div className="small secondary">
               {[p.brand, p.servingLabel || (p.servingVolumeMl ? `${p.servingVolumeMl} ml` : null)].filter(Boolean).join(" · ")}

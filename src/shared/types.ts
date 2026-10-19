@@ -94,7 +94,8 @@ export interface Product {
   /** Kandungan per 1 takaran saji, dalam satuan kanonik. */
   nutrients: NutrientMap;
   notes: string;
-  source: "manual" | "ai";
+  /** manual, "ai" = dibaca dari foto label, "estimasi" = perkiraan AI dari nama minuman. */
+  source: "manual" | "ai" | "estimasi";
   active: boolean;
   updatedAt: string;
 }

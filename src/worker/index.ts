@@ -3,7 +3,7 @@ import { intakeFromProduct, sumIntakes } from "../shared/intake";
 import { NUTRIENT_KEYS, formatNutrient, type NutrientMap } from "../shared/nutrients";
 import { addDays, isValidTimeZone, localParts } from "../shared/time";
 import { LAB_FIELDS, RED_FLAGS, type Member } from "../shared/types";
-import { AiError, evaluateIntake, modelFor, readLabel, suggestIntake } from "./ai";
+import { AiError, estimateDrink, evaluateIntake, modelFor, readLabel, suggestIntake } from "./ai";
 import { checkPassword, clearLoginFailures, issueToken, loginBlocked, recordLoginFailure, verifyToken } from "./auth";
 import { buildAiContext } from "./context";
 import {
@@ -119,7 +119,7 @@ const productSchema = z.object({
   preparation: text(600),
   nutrients: nutrientMapSchema,
   notes: text(1500),
-  source: z.enum(["manual", "ai"]),
+  source: z.enum(["manual", "ai", "estimasi"]),
   active: z.boolean(),
 });
 
@@ -135,6 +135,8 @@ const intakeSchema = z.union([
     productId: z.null(),
     productName: text(120).min(1),
     volumeMl: posNum.max(5000),
+    /** Kandungan untuk volume ini (mis. hasil perkiraan AI); kosong = cairan saja. */
+    nutrients: nutrientMapSchema.optional(),
     takenAt: z.string().datetime().optional(),
     note: text(300).default(""),
   }),
@@ -351,7 +353,7 @@ route("POST", "/api/intakes", async ({ env, req, me }) => {
     amount = data.volumeMl;
     unit = "ml";
     volumeMl = data.volumeMl;
-    nutrients = {};
+    nutrients = data.nutrients ?? {};
   }
 
   const id = newId();
@@ -552,6 +554,18 @@ route("POST", "/api/push/test", async ({ env, req, me }) => {
 });
 
 // AI
+route("POST", "/api/ai/estimate", async ({ env, req }) => {
+  const data = await body(req, z.object({ description: text(300).min(2), volumeMl: posNum.max(2000) }));
+  const { profile } = await today(env);
+  const estimate = await estimateDrink(env, {
+    description: data.description.trim(),
+    volumeMl: data.volumeMl,
+    diagnosis: profile.diagnosis,
+    dietOrder: profile.dietOrder,
+  });
+  return jsonResponse({ estimate });
+});
+
 route("POST", "/api/ai/label", async ({ env, req }) => {
   const data = await body(req, z.object({ images: z.array(imageSchema).min(1).max(4) }));
   const draft = await readLabel(env, data.images);
