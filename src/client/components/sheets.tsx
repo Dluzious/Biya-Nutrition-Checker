@@ -5,7 +5,7 @@ import { localParts, zonedToUtc } from "../../shared/time";
 import { RED_FLAGS, type IntakeUnit, type Product, type RedFlagKey } from "../../shared/types";
 import { api } from "../api";
 import { useApp } from "../store";
-import { Field, NumberInput, Segmented, Sheet, Spinner, fmt } from "./ui";
+import { ConfirmDialog, Field, NumberInput, Segmented, Sheet, Spinner, fmt } from "./ui";
 
 interface DrinkEstimate {
   isLiquid: boolean;
@@ -56,6 +56,13 @@ export function LogIntakeSheet({ prefill, onClose }: { prefill?: IntakePrefill; 
   const [estNutrients, setEstNutrients] = useState<NutrientMap>({});
   const [estimating, setEstimating] = useState(false);
   const [saveAsProduct, setSaveAsProduct] = useState(true);
+  const [confirmEstimate, setConfirmEstimate] = useState(false);
+  // Produk tersimpan yang namanya mirip, supaya tidak perlu memanggil AI lagi.
+  const similar = useMemo(() => {
+    const key = otherName.trim().toLowerCase().split(/\s+/).slice(0, 2).join(" ");
+    if (key.length < 3) return [];
+    return products.filter((p) => p.name.toLowerCase().includes(key));
+  }, [otherName, products]);
 
   const preview = useMemo(() => {
     if (!amount) return null;
@@ -247,7 +254,7 @@ export function LogIntakeSheet({ prefill, onClose }: { prefill?: IntakePrefill; 
             type="button"
             className="btn block"
             disabled={estimating || !amount || otherName.trim().length < 2 || !boot.ai.ready}
-            onClick={runEstimate}
+            onClick={() => setConfirmEstimate(true)}
           >
             {estimating ? (
               <>
@@ -261,6 +268,46 @@ export function LogIntakeSheet({ prefill, onClose }: { prefill?: IntakePrefill; 
             Tanpa dihitung, minuman ini dicatat sebagai cairan saja (0 kkal) — cocok untuk air putih atau teh tawar.
           </p>
         </div>
+      )}
+
+      {confirmEstimate && (
+        <ConfirmDialog
+          title="Hitung gizi dengan AI?"
+          confirmLabel={similar.length ? "Tetap hitung" : "Kirim ke AI"}
+          onCancel={() => setConfirmEstimate(false)}
+          onConfirm={() => {
+            setConfirmEstimate(false);
+            runEstimate();
+          }}
+        >
+          <p>
+            “{otherName.trim()}” {amount} ml akan diperkirakan oleh AI (perkiraan biaya USD 0,02–0,05).
+          </p>
+          {similar.length > 0 && (
+            <>
+              <p>
+                <strong style={{ color: "var(--ink)" }}>Sudah ada di daftar produk — pilih saja tanpa AI:</strong>
+              </p>
+              <div className="chips">
+                {similar.map((p) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    className="chip"
+                    onClick={() => {
+                      setConfirmEstimate(false);
+                      const keep = amount;
+                      choose(p.id);
+                      if (keep && p.servingVolumeMl) setAmount(keep);
+                    }}
+                  >
+                    {p.name}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+        </ConfirmDialog>
       )}
 
       {productId === OTHER && estimate && (

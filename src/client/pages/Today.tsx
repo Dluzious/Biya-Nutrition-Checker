@@ -5,7 +5,7 @@ import { RED_FLAGS } from "../../shared/types";
 import { api } from "../api";
 import { EvaluationCard } from "../components/EvaluationCard";
 import { LogIntakeSheet, SymptomSheet, type IntakePrefill } from "../components/sheets";
-import { Meter, Spinner, fmt, fmtDate, fmtIn, fmtTime } from "../components/ui";
+import { ConfirmDialog, Meter, Spinner, fmt, fmtDate, fmtIn, fmtTime, minutesAgo } from "../components/ui";
 import { useApp } from "../store";
 
 export function TodayPage({ goTo }: { goTo: (tab: "pasien" | "produk" | "jadwal") => void }) {
@@ -15,6 +15,7 @@ export function TodayPage({ goTo }: { goTo: (tab: "pasien" | "produk" | "jadwal"
     new URLSearchParams(location.search).has("log") ? { kind: "intake" } : null,
   );
   const [aiBusy, setAiBusy] = useState<null | "saran" | "evaluasi">(null);
+  const [confirmAi, setConfirmAi] = useState<null | "saran" | "evaluasi">(null);
 
   const intakes = day?.intakes ?? [];
   const totals = useMemo(() => sumIntakes(intakes), [intakes]);
@@ -40,6 +41,17 @@ export function TodayPage({ goTo }: { goTo: (tab: "pasien" | "produk" | "jadwal"
 
   const redFlags = (day?.symptoms ?? []).flatMap((s) => s.redFlags);
   const latestEval = day?.evaluations[0];
+
+  // Info untuk dialog konfirmasi: kapan terakhir dibuat & apakah ada data baru sejak itu.
+  const lastAi = (kind: "saran" | "evaluasi") => {
+    const last = day?.evaluations.find((e) => e.kind === kind);
+    if (!last) return null;
+    const since = Date.parse(last.createdAt);
+    const newData =
+      intakes.filter((i) => Date.parse(i.takenAt) > since).length +
+      (day?.symptoms ?? []).filter((s) => Date.parse(s.at) > since).length;
+    return { last, newData };
+  };
 
   const askAi = async (kind: "saran" | "evaluasi") => {
     if (!boot.ai.ready) {
@@ -219,10 +231,10 @@ export function TodayPage({ goTo }: { goTo: (tab: "pasien" | "produk" | "jadwal"
           {!boot.ai.ready && <span className="tiny muted">belum aktif</span>}
         </div>
         <div className="grid-2">
-          <button className="btn" disabled={aiBusy !== null || !isToday} onClick={() => askAi("saran")}>
+          <button className="btn" disabled={aiBusy !== null || !isToday} onClick={() => setConfirmAi("saran")}>
             {aiBusy === "saran" ? <Spinner /> : "Saran berikutnya"}
           </button>
-          <button className="btn" disabled={aiBusy !== null} onClick={() => askAi("evaluasi")}>
+          <button className="btn" disabled={aiBusy !== null} onClick={() => setConfirmAi("evaluasi")}>
             {aiBusy === "evaluasi" ? <Spinner /> : "Evaluasi kecukupan"}
           </button>
         </div>
@@ -326,6 +338,41 @@ export function TodayPage({ goTo }: { goTo: (tab: "pasien" | "produk" | "jadwal"
         />
       )}
       {sheet?.kind === "symptom" && <SymptomSheet onClose={() => setSheet(null)} />}
+      {confirmAi &&
+        (() => {
+          const info = lastAi(confirmAi);
+          const what = confirmAi === "evaluasi" ? "evaluasi kecukupan" : "saran minum berikutnya";
+          return (
+            <ConfirmDialog
+              title={confirmAi === "evaluasi" ? "Minta evaluasi AI?" : "Minta saran AI?"}
+              onCancel={() => setConfirmAi(null)}
+              onConfirm={() => {
+                const kind = confirmAi;
+                setConfirmAi(null);
+                askAi(kind);
+              }}
+            >
+              <p>
+                Data {isToday ? "hari ini" : fmtDate(date)} akan dikirim ke AI untuk {what}. Setiap permintaan dikenai biaya API
+                (perkiraan USD {confirmAi === "evaluasi" ? "0,05–0,15" : "0,03–0,08"}).
+              </p>
+              {info ? (
+                <p>
+                  Terakhir dibuat <strong>{minutesAgo(info.last.createdAt)}</strong> oleh {info.last.createdByName ?? "anggota lain"}.{" "}
+                  {info.newData === 0 ? (
+                    <strong style={{ color: "var(--ink)" }}>
+                      Belum ada catatan minum/gejala baru sejak itu — hasilnya kemungkinan sama. Lihat hasil terakhir di bawah.
+                    </strong>
+                  ) : (
+                    `Sejak itu ada ${info.newData} catatan baru.`
+                  )}
+                </p>
+              ) : (
+                <p>Belum ada {what} untuk tanggal ini.</p>
+              )}
+            </ConfirmDialog>
+          );
+        })()}
     </>
   );
 }

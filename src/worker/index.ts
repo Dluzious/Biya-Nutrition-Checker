@@ -580,18 +580,66 @@ async function saveEvaluation(env: Env, me: Member, date: string, kind: "evaluas
   return (await listEvaluations(env.DB, 1, date)).find((e) => e.id === id);
 }
 
+const AI_COOLDOWN_MS = 2 * 60_000;
+const AI_LOCK_STALE_MS = 3 * 60_000;
+
+/**
+ * Mencegah evaluasi/saran yang sama dikirim berulang ke API: tolak bila baru
+ * dibuat <2 menit lalu, atau bila sedang diproses atas permintaan HP lain.
+ * Mengembalikan fungsi untuk melepas kunci setelah selesai.
+ */
+async function claimAiRun(env: Env, me: Member, date: string, kind: "evaluasi" | "saran") {
+  const label = kind === "evaluasi" ? "Evaluasi" : "Saran AI";
+  const recent = await env.DB.prepare(
+    `SELECT e.created_at AS at, m.name AS name FROM evaluations e LEFT JOIN members m ON m.id = e.created_by
+     WHERE e.local_date = ? AND e.kind = ? ORDER BY e.created_at DESC LIMIT 1`,
+  )
+    .bind(date, kind)
+    .first<{ at: string; name: string | null }>();
+  if (recent && Date.now() - Date.parse(recent.at) < AI_COOLDOWN_MS) {
+    const sec = Math.max(1, Math.round((Date.now() - Date.parse(recent.at)) / 1000));
+    throw new HttpError(409, `${label} baru saja dibuat oleh ${recent.name ?? "anggota lain"} ${sec} detik lalu. Hasilnya ada di halaman Hari Ini.`);
+  }
+
+  const key = `ai_lock:${kind}:${date}`;
+  const claimed = await env.DB.prepare(
+    `INSERT INTO settings (key, value, updated_at, updated_by) VALUES (?1, ?2, ?3, ?4)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, updated_by = excluded.updated_by
+     WHERE settings.updated_at < ?5`,
+  )
+    .bind(key, JSON.stringify(me.name), new Date().toISOString(), me.id, new Date(Date.now() - AI_LOCK_STALE_MS).toISOString())
+    .run();
+  if (!claimed.meta.changes) {
+    const holder = await getSetting<string>(env.DB, key);
+    throw new HttpError(409, `${label} sedang diproses atas permintaan ${holder ?? "anggota lain"}. Tunggu sebentar.`);
+  }
+  return async () => {
+    await env.DB.prepare("DELETE FROM settings WHERE key = ?").bind(key).run();
+  };
+}
+
 route("POST", "/api/ai/evaluate", async ({ env, req, me }) => {
   const data = await body(req, z.object({ date: dateStr }));
-  const context = await buildAiContext(env, data.date);
-  const output = await evaluateIntake(env, context);
-  return jsonResponse({ evaluation: await saveEvaluation(env, me, data.date, "evaluasi", output) });
+  const release = await claimAiRun(env, me, data.date, "evaluasi");
+  try {
+    const context = await buildAiContext(env, data.date);
+    const output = await evaluateIntake(env, context);
+    return jsonResponse({ evaluation: await saveEvaluation(env, me, data.date, "evaluasi", output) });
+  } finally {
+    await release();
+  }
 });
 
 route("POST", "/api/ai/suggest", async ({ env, req, me }) => {
   const data = await body(req, z.object({ date: dateStr }));
-  const context = await buildAiContext(env, data.date);
-  const output = await suggestIntake(env, context);
-  return jsonResponse({ evaluation: await saveEvaluation(env, me, data.date, "saran", output) });
+  const release = await claimAiRun(env, me, data.date, "saran");
+  try {
+    const context = await buildAiContext(env, data.date);
+    const output = await suggestIntake(env, context);
+    return jsonResponse({ evaluation: await saveEvaluation(env, me, data.date, "saran", output) });
+  } finally {
+    await release();
+  }
 });
 
 route("GET", "/api/evaluations", async ({ env, url }) => {

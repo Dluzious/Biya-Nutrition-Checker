@@ -72,6 +72,62 @@ export function Sheet({ title, onClose, children }: { title: string; onClose: ()
   );
 }
 
+/** Dialog konfirmasi di tengah layar, dipakai sebelum mengirim permintaan ke AI. */
+export function ConfirmDialog({
+  title,
+  children,
+  confirmLabel = "Kirim ke AI",
+  onConfirm,
+  onCancel,
+}: {
+  title: string;
+  children: ReactNode;
+  confirmLabel?: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopImmediatePropagation();
+        onCancel();
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [onCancel]);
+  return (
+    <div
+      className="dialog-backdrop"
+      onClick={(e) => {
+        e.stopPropagation();
+        onCancel();
+      }}
+    >
+      <div className="dialog" role="alertdialog" aria-modal="true" aria-label={title} onClick={(e) => e.stopPropagation()}>
+        <h2>{title}</h2>
+        <div className="small secondary stack">{children}</div>
+        <div className="grid-2" style={{ marginTop: 16 }}>
+          <button className="btn" onClick={onCancel}>
+            Batal
+          </button>
+          <button className="btn primary" onClick={onConfirm}>
+            {confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function minutesAgo(iso: string): string {
+  const m = Math.round((Date.now() - Date.parse(iso)) / 60_000);
+  if (m < 1) return "baru saja";
+  if (m < 60) return `${m} menit lalu`;
+  const h = Math.floor(m / 60);
+  return `${h} jam${m % 60 ? ` ${m % 60} menit` : ""} lalu`;
+}
+
 const STATUS_STYLE: Record<AdequacyStatus, { color: string; icon: string }> = {
   kurang: { color: "var(--serious)", icon: "▼" },
   hampir: { color: "var(--warning)", icon: "◐" },

@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import { NUTRIENTS, type NutrientKey, type NutrientMap } from "../../shared/nutrients";
 import type { Product } from "../../shared/types";
 import { api } from "../api";
-import { Field, NumberInput, Segmented, Sheet, Spinner, fmt } from "../components/ui";
+import { ConfirmDialog, Field, NumberInput, Segmented, Sheet, Spinner, fmt } from "../components/ui";
 import { prepareImage, type PreparedImage } from "../image";
 import { useApp } from "../store";
 
@@ -163,6 +163,7 @@ function PhotoSheet({ onDraft, onClose }: { onDraft: (d: AiDraft) => void; onClo
   const { boot, toast } = useApp();
   const [images, setImages] = useState<PreparedImage[]>([]);
   const [busy, setBusy] = useState<"prep" | "ai" | null>(null);
+  const [confirming, setConfirming] = useState(false);
   const input = useRef<HTMLInputElement>(null);
 
   const add = async (files: FileList | null) => {
@@ -226,7 +227,7 @@ function PhotoSheet({ onDraft, onClose }: { onDraft: (d: AiDraft) => void; onClo
             {busy === "prep" ? <Spinner /> : images.length ? "+ Tambah foto" : "Ambil / pilih foto"}
           </button>
         )}
-        <button className="btn primary block" disabled={!images.length || busy !== null || !boot.ai.ready} onClick={read}>
+        <button className="btn primary block" disabled={!images.length || busy !== null || !boot.ai.ready} onClick={() => setConfirming(true)}>
           {busy === "ai" ? (
             <>
               <Spinner /> Membaca label…
@@ -236,6 +237,22 @@ function PhotoSheet({ onDraft, onClose }: { onDraft: (d: AiDraft) => void; onClo
           )}
         </button>
       </div>
+      {confirming && (
+        <ConfirmDialog
+          title="Baca label dengan AI?"
+          onCancel={() => setConfirming(false)}
+          onConfirm={() => {
+            setConfirming(false);
+            read();
+          }}
+        >
+          <p>
+            {images.length} foto akan dikirim ke AI (perkiraan biaya USD 0,03–0,07). Pastikan tabel gizinya tajam dan terbaca — foto buram
+            membuang biaya dan hasilnya kurang akurat.
+          </p>
+          <p>Produk yang sudah tersimpan tidak perlu difoto ulang kecuali kemasannya berubah.</p>
+        </ConfirmDialog>
+      )}
     </Sheet>
   );
 }
