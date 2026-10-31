@@ -1,14 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { expectedFraction, suggestNext, sumIntakes } from "../../shared/intake";
 import { addDays, localParts, timeToMinutes } from "../../shared/time";
-import { RED_FLAGS, type Intake } from "../../shared/types";
+import { DEFAULT_PROFILE, RED_FLAGS, type Intake } from "../../shared/types";
 import { api } from "../api";
 import { EvaluationCard } from "../components/EvaluationCard";
 import { FoodSheet } from "../components/FoodSheet";
 import { LogIntakeSheet, SymptomSheet, type IntakePrefill } from "../components/sheets";
 import { ActionButton, ConfirmDialog, Confetti, Meter, NEAR_PCT, Spinner, fmt, fmtDate, fmtIn, fmtTime, minutesAgo } from "../components/ui";
 import { missingPatientData } from "../completeness";
-import { useApp } from "../store";
+import { useAction, useApp } from "../store";
 
 export function TodayPage({ goTo }: { goTo: (tab: "pasien" | "produk" | "jadwal") => void }) {
   const { boot, day, date, setDate, isToday, todayDate, targets, run, toast } = useApp();
@@ -28,6 +28,21 @@ export function TodayPage({ goTo }: { goTo: (tab: "pasien" | "produk" | "jadwal"
   const intakes = day?.intakes ?? [];
   const totals = useMemo(() => sumIntakes(intakes), [intakes]);
   const allowFood = boot.profile.dietStage !== "cair";
+  const [confirmSoftDiet, setConfirmSoftDiet] = useState(false);
+  const [switchingDiet, execSwitchDiet] = useAction();
+  // Pindah ke tahap "cair + lunak" langsung dari tombol Makan, lalu buka form makan.
+  const startSoftDiet = async () => {
+    const dietOrder =
+      boot.profile.dietOrder === DEFAULT_PROFILE.dietOrder
+        ? "Diet cair + mulai makanan lunak — Nutrican, Fresubin, dan makanan lunak"
+        : boot.profile.dietOrder;
+    const ok = await execSwitchDiet(
+      () => api("/api/profile", { method: "PUT", body: { ...boot.profile, dietStage: "cair_lunak", dietOrder } }),
+      "Tahap diet diubah ke Cair + lunak",
+    );
+    setConfirmSoftDiet(false);
+    if (ok) setSheet({ kind: "food" });
+  };
   const foodCount = intakes.filter((i) => i.kind === "makan").length;
 
   // Rayakan saat target hampir/sudah tercapai setelah ada catatan baru (bukan saat halaman dibuka).
@@ -285,28 +300,17 @@ export function TodayPage({ goTo }: { goTo: (tab: "pasien" | "produk" | "jadwal"
         </div>
       )}
 
-      {allowFood ? (
-        <div className="grid-3" style={{ marginBottom: 12 }}>
-          <button className="btn primary" onClick={() => setSheet({ kind: "intake" })}>
-            🥤 Minum
-          </button>
-          <button className="btn primary" onClick={() => setSheet({ kind: "food" })}>
-            🥣 Makan
-          </button>
-          <button className="btn" onClick={() => setSheet({ kind: "symptom" })}>
-            Gejala
-          </button>
-        </div>
-      ) : (
-        <div className="grid-2" style={{ marginBottom: 12 }}>
-          <button className="btn primary" onClick={() => setSheet({ kind: "intake" })}>
-            + Catat minum
-          </button>
-          <button className="btn" onClick={() => setSheet({ kind: "symptom" })}>
-            Catat gejala
-          </button>
-        </div>
-      )}
+      <div className="grid-3" style={{ marginBottom: 12 }}>
+        <button className="btn primary" onClick={() => setSheet({ kind: "intake" })}>
+          🥤 Minum
+        </button>
+        <button className={`btn ${allowFood ? "primary" : ""}`} onClick={() => (allowFood ? setSheet({ kind: "food" }) : setConfirmSoftDiet(true))}>
+          🥣 Makan
+        </button>
+        <button className="btn" onClick={() => setSheet({ kind: "symptom" })}>
+          Gejala
+        </button>
+      </div>
 
       <div className="card">
         <div className="card-header">
@@ -464,6 +468,22 @@ export function TodayPage({ goTo }: { goTo: (tab: "pasien" | "produk" | "jadwal"
       {sheet?.kind === "food" && <FoodSheet onClose={() => setSheet(null)} />}
       {sheet?.kind === "symptom" && <SymptomSheet onClose={() => setSheet(null)} />}
       {celebrating.length > 0 && <Confetti />}
+      {confirmSoftDiet && (
+        <ConfirmDialog
+          title="Sudah boleh makanan lunak?"
+          confirmLabel={switchingDiet ? "Menyimpan…" : "Ya, mulai diet lunak"}
+          onCancel={() => setConfirmSoftDiet(false)}
+          onConfirm={() => {
+            if (!switchingDiet) startSoftDiet();
+          }}
+        >
+          <p>
+            Tahap diet saat ini: <strong>Diet cair</strong>. Pilih “Ya” hanya bila dokter sudah mengizinkan makanan lunak — tahap diet
+            akan diubah ke <strong>Cair + lunak</strong> (formula tetap jadi andalan, makanan lunak mulai bertahap).
+          </p>
+          <p>Bisa diubah kembali kapan saja di menu Pasien → Tahap diet.</p>
+        </ConfirmDialog>
+      )}
       {confirmAi &&
         (() => {
           const info = lastAi(confirmAi);
