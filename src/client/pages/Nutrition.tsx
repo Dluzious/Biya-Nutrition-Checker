@@ -243,6 +243,10 @@ export function NutritionPage() {
 
   const totals = useMemo(() => sumIntakes(day?.intakes ?? []), [day?.intakes]);
   const n = totals.nutrients;
+  const foodEnergy = useMemo(
+    () => sumIntakes((day?.intakes ?? []).filter((i) => i.kind === "makan")).nutrients.energy_kcal ?? 0,
+    [day?.intakes],
+  );
 
   const macroRows: Row[] = [
     { label: "Energi", unit: "kkal", value: n.energy_kcal ?? 0, target: targets.energy?.target ?? null },
@@ -288,6 +292,11 @@ export function NutritionPage() {
           <h2>{fmtDate(date)}</h2>
           {energyPct !== null && <StatusPill status={adequacyStatus(energyPct)} />}
         </div>
+        {foodEnergy > 0 && (
+          <p className="small secondary" style={{ marginBottom: 6 }}>
+            Sumber energi: 🥣 makanan {fmt(foodEnergy)} kkal · 🥤 minuman/formula {fmt((n.energy_kcal ?? 0) - foodEnergy)} kkal
+          </p>
+        )}
         <NutrientTable rows={macroRows} />
         <h3>Vitamin</h3>
         <NutrientTable rows={microRows("vitamin")} />

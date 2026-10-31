@@ -4,11 +4,16 @@ import { minutesToTime, timeToMinutes } from "./time";
 import type { Intake, IntakeUnit, Product, ScheduleItem } from "./types";
 
 export function intakeFromProduct(
-  product: Pick<Product, "servingVolumeMl" | "nutrients">,
+  product: Pick<Product, "servingVolumeMl" | "nutrients"> & Partial<Pick<Product, "form" | "fluidMl">>,
   amount: number,
   unit: IntakeUnit,
 ): { volumeMl: number; nutrients: NutrientMap } {
   if (!(amount > 0)) throw new Error("Jumlah harus lebih dari 0.");
+  if (product.form === "makanan") {
+    // Makanan dicatat per porsi; yang dihitung sebagai cairan hanya air/kuahnya.
+    if (unit !== "porsi") throw new Error("Makanan dicatat per porsi.");
+    return { volumeMl: (product.fluidMl ?? 0) * amount, nutrients: scaleNutrients(product.nutrients, amount) };
+  }
   if (unit === "ml") {
     if (!product.servingVolumeMl) {
       throw new Error("Produk ini belum punya volume per takaran saji; catat dalam porsi.");
@@ -163,8 +168,9 @@ export function suggestNext(input: SuggestInput): NextSuggestion {
     }
   }
 
+  // Saran "minum berikutnya" hanya dari formula/minuman, bukan makanan.
   const nutritive = input.products.filter(
-    (p) => p.active && (p.nutrients.energy_kcal ?? 0) > 0,
+    (p) => p.active && p.form !== "makanan" && (p.nutrients.energy_kcal ?? 0) > 0,
   );
   if (nutritive.length === 0) {
     notes.push("Belum ada produk bergizi. Tambahkan produk (foto label) di menu Produk.");

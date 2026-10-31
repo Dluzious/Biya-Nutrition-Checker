@@ -407,6 +407,157 @@ export async function estimateDrink(
 }
 
 // ---------------------------------------------------------------------------
+// Analisis makanan (diet lunak) dari foto dan/atau keterangan
+
+const FOOD_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["is_food", "name", "portion_description", "items", "total_grams", "fluid_ml", "nutrients", "diet_fit", "assumptions", "confidence"],
+  properties: {
+    is_food: { type: "boolean" },
+    name: { type: "string" },
+    portion_description: { type: "string" },
+    items: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["name", "grams", "energy_kcal", "protein_g"],
+        properties: {
+          name: { type: "string" },
+          grams: { type: "number" },
+          energy_kcal: { type: "number" },
+          protein_g: { type: "number" },
+        },
+      },
+    },
+    total_grams: { type: "number" },
+    fluid_ml: { type: "number" },
+    nutrients: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["key", "amount"],
+        properties: {
+          key: { type: "string", enum: NUTRIENT_KEYS },
+          amount: { type: "number" },
+        },
+      },
+    },
+    diet_fit: {
+      type: "object",
+      additionalProperties: false,
+      required: ["status", "notes"],
+      properties: {
+        status: { type: "string", enum: ["sesuai", "sebagian", "tidak_sesuai"] },
+        notes: { type: "array", items: { type: "string" } },
+      },
+    },
+    assumptions: { type: "array", items: { type: "string" } },
+    confidence: { type: "string", enum: ["tinggi", "sedang", "rendah"] },
+  },
+} as const;
+
+const FoodSchema = z.object({
+  is_food: z.boolean(),
+  name: z.string(),
+  portion_description: z.string(),
+  items: z.array(z.object({ name: z.string(), grams: z.number(), energy_kcal: z.number(), protein_g: z.number() })),
+  total_grams: z.number(),
+  fluid_ml: z.number(),
+  nutrients: z.array(z.object({ key: z.string(), amount: z.number() })),
+  diet_fit: z.object({ status: z.enum(["sesuai", "sebagian", "tidak_sesuai"]), notes: z.array(z.string()) }),
+  assumptions: z.array(z.string()),
+  confidence: z.enum(["tinggi", "sedang", "rendah"]),
+});
+
+export type FoodReading = z.infer<typeof FoodSchema>;
+
+const FOOD_SYSTEM = `Kamu ahli gizi yang memperkirakan kandungan gizi makanan untuk pasien kanker dengan metastasis ke lambung yang sedang menjalani diet lunak (atau transisi dari diet cair). Masukannya foto makanan dan/atau keterangan dari keluarga.
+
+Aturan:
+- Kenali setiap komponen hidangan (mis. bubur, ayam suwir, telur, kuah) dan perkirakan beratnya dalam gram dari ukuran wadah/sendok di foto (piring makan ±23 cm, mangkuk sedang ±300–400 ml, sendok makan ±10–15 g). Bila keterangan menyebut porsi ("setengah mangkuk"), pakai keterangan itu.
+- Hitung kandungan untuk SELURUH porsi yang terlihat/disebutkan. Pakai Tabel Komposisi Pangan Indonesia (TKPI) dan USDA.
+- nutrients: total seluruh porsi dalam satuan persis berikut; isi minimal energi, protein, karbohidrat, lemak, serat, natrium bila bisa diperkirakan:
+${ESTIMATE_UNITS}
+- items: rincian per komponen (gram, kkal, protein).
+- total_grams: perkiraan berat total porsi.
+- fluid_ml: perkiraan air/kuah yang ikut terminum dari porsi ini (kuah sup, bubur encer, susu); kecil untuk makanan padat lunak seperti tahu atau telur.
+- name: nama hidangan singkat (mis. "Bubur ayam tanpa kerupuk").
+- portion_description: porsi dengan kata-kata (mis. "1 mangkuk sedang ±300 g").
+- diet_fit: apakah sesuai diet lunak untuk lambung yang sensitif — lunak, mudah dicerna, rendah serat kasar, tidak pedas/asam/bersantan kental/digoreng keras. "sebagian" bila ada komponen yang sebaiknya disisihkan (sebutkan di notes, maks 2 catatan singkat).
+- assumptions: asumsi penting yang memengaruhi angka (maks 3, singkat).
+- is_food: false bila foto/keterangan bukan makanan.
+- confidence: seberapa yakin perkiraanmu; foto buram/porsi tertutup → rendah.
+- Bahasa Indonesia.`;
+
+export interface FoodEstimate {
+  isFood: boolean;
+  name: string;
+  portionDescription: string;
+  items: { name: string; grams: number; energyKcal: number; proteinG: number }[];
+  totalGrams: number;
+  fluidMl: number;
+  nutrients: NutrientMap;
+  dietFit: { status: "sesuai" | "sebagian" | "tidak_sesuai"; notes: string[] };
+  assumptions: string[];
+  confidence: "tinggi" | "sedang" | "rendah";
+}
+
+/** Mengubah jawaban AI menjadi perkiraan yang aman dipakai (kunci dikenal, tidak negatif). */
+export function foodToEstimate(r: FoodReading): FoodEstimate {
+  const nonNeg = (n: number) => (Number.isFinite(n) && n > 0 ? Math.round(n * 1000) / 1000 : 0);
+  const nutrients: NutrientMap = {};
+  for (const n of r.nutrients) {
+    if (isNutrientKey(n.key) && Number.isFinite(n.amount) && n.amount >= 0) nutrients[n.key] = nonNeg(n.amount);
+  }
+  return {
+    isFood: r.is_food,
+    name: r.name.trim() || "Makanan",
+    portionDescription: r.portion_description,
+    items: r.items.map((i) => ({ name: i.name, grams: nonNeg(i.grams), energyKcal: nonNeg(i.energy_kcal), proteinG: nonNeg(i.protein_g) })),
+    totalGrams: nonNeg(r.total_grams),
+    fluidMl: nonNeg(r.fluid_ml),
+    nutrients,
+    dietFit: r.diet_fit,
+    assumptions: r.assumptions.slice(0, 3),
+    confidence: r.confidence,
+  };
+}
+
+export async function estimateFood(
+  env: Env,
+  input: { images: ImageInput[]; description: string; diagnosis: string; dietOrder: string },
+): Promise<FoodEstimate> {
+  const reading = await callClaude(env, {
+    system: FOOD_SYSTEM,
+    content: [
+      ...input.images.map(
+        (img): Anthropic.Beta.BetaImageBlockParam => ({
+          type: "image",
+          source: { type: "base64", media_type: img.mediaType, data: img.data },
+        }),
+      ),
+      {
+        type: "text",
+        text: [
+          input.images.length ? `${input.images.length} foto makanan terlampir.` : "Tidak ada foto; perkirakan dari keterangan saja.",
+          `Keterangan keluarga: ${input.description || "-"}`,
+          `Diagnosis: ${input.diagnosis || "-"}`,
+          `Instruksi diet: ${input.dietOrder || "-"}`,
+        ].join("\n"),
+      },
+    ],
+    schema: FOOD_SCHEMA,
+    validator: FoodSchema,
+    effort: "medium",
+    timeoutMs: 120_000,
+  });
+  return foodToEstimate(reading);
+}
+
+// ---------------------------------------------------------------------------
 // Evaluasi kecukupan & saran asupan berikutnya
 
 const CLINICAL_CONTEXT = `Kamu adalah ahli gizi klinis (dietisien) yang mendampingi seorang pasien kanker perempuan dan keluarganya lewat aplikasi pemantau asupan. Diagnosis dan instruksi diet dari dokter ada di data (profil.diagnosis, profil.instruksi_diet) — umumnya DIET CAIR dengan formula oral (ONS) seperti Nutrican dan Fresubin. Bicaralah seperti dietisien yang hangat kepada pasien (sapa dengan namanya, profil.nama) dan pendampingnya, bukan kepada tenaga kesehatan.
@@ -414,7 +565,8 @@ const CLINICAL_CONTEXT = `Kamu adalah ahli gizi klinis (dietisien) yang mendampi
 Prinsip:
 - Nilai berdasarkan data yang diberikan saja. Bila data penting kurang (BB lama tidak ditimbang, produk belum lengkap, belum ada catatan), katakan dengan jelas.
 - Target energi/protein/cairan sudah dihitung aplikasi (ESPEN 2021: 25–30 kkal/kg, protein 1,0–1,5 g/kg; atau target dokter bila ada). Pakai target itu; jangan membuat target baru.
-- Patuhi instruksi diet dokter (diet cair). Jangan menyarankan makanan padat, suplemen herbal, atau obat; jangan menyarankan mengubah/menghentikan obat atau terapi. Saran produk hanya dari daftar produk yang tersedia, ditambah air putih bila tidak ada batasan cairan.
+- Patuhi tahap diet di profil.tahap_diet: "cair" = hanya cairan, jangan sarankan makanan; "cair_lunak" = formula cair tetap utama, makanan lunak mulai bertahap; "lunak" = makanan lunak boleh menjadi menu utama dengan formula sebagai tambahan. Makanan lunak: lembut, mudah dicerna, rendah serat kasar, tidak pedas/asam/bersantan kental/digoreng (mis. bubur, nasi tim, sup sayur lunak, telur rebus/kukus, tahu, ikan kukus, daging cincang halus, pisang, pepaya). Jangan menyarankan makanan keras/biasa, suplemen herbal, atau obat; jangan menyarankan mengubah/menghentikan obat atau terapi. Saran formula hanya dari produk yang tersedia, ditambah air putih bila tidak ada batasan cairan.
+- Saat transisi ke makanan lunak, porsi makan biasanya kecil sehingga asupan bisa turun: sarankan formula tetap diminum di antara waktu makan sampai makanan lunak memenuhi sebagian besar kebutuhan. Makan sedikit-sedikit tapi sering (5–6 kali), kunyah perlahan.
 - Hormati volume maksimal sekali minum. Bila ada mual, muntah, begah, atau diare, sarankan cara meningkatkan toleransi (porsi lebih kecil dan lebih sering, diminum perlahan/disesap, disajikan dingin, jeda dari berbaring setelah minum) dan sarankan konsultasi bila menetap.
 - Bila risiko refeeding tinggi dan masih di hari-hari awal, ingatkan agar tidak mengejar target penuh terlalu cepat dan perlunya cek elektrolit sesuai arahan dokter.
 - Tanda bahaya (muntah darah/cairan seperti kopi, BAB hitam, tidak bisa menahan cairan, BAK sangat sedikit, pingsan, demam ≥38°C, nyeri perut hebat, sesak) → minta segera menghubungi dokter atau ke IGD.

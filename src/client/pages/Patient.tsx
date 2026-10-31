@@ -170,6 +170,17 @@ function ProfileForm() {
       <Field label="Diagnosis">
         <input type="text" value={p.diagnosis} onChange={(e) => set("diagnosis", e.target.value)} />
       </Field>
+      <Field label="Tahap diet" hint="Pilih sesuai arahan dokter. Fitur catat makan & foto makanan aktif bila sudah boleh makanan lunak.">
+        <Segmented
+          value={p.dietStage}
+          onChange={(v) => set("dietStage", v)}
+          options={[
+            { value: "cair", label: "Cair" },
+            { value: "cair_lunak", label: "Cair + lunak" },
+            { value: "lunak", label: "Lunak" },
+          ]}
+        />
+      </Field>
       <Field label="Instruksi diet dari dokter">
         <input type="text" value={p.dietOrder} onChange={(e) => set("dietOrder", e.target.value)} />
       </Field>

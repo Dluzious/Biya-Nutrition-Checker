@@ -51,8 +51,8 @@ export function LogIntakeSheet({
   const { boot, date, isToday, todayDate, run, toast } = useApp();
   const tz = boot.profile.timezone;
   const editProduct = editing?.productId ? boot.products.find((p) => p.id === editing.productId) : undefined;
-  // Produk catatan lama tetap bisa dipilih walau sudah tidak "sedang dipakai".
-  const products = boot.products.filter((p) => p.active || p.id === editProduct?.id);
+  // Produk catatan lama tetap bisa dipilih walau sudah tidak "sedang dipakai". Makanan dicatat lewat form makan.
+  const products = boot.products.filter((p) => p.form !== "makanan" && (p.active || p.id === editProduct?.id));
   const first = editing ? editProduct : prefill ? products.find((p) => p.id === prefill.productId) : products[0];
   // Catatan tanpa produk (atau produknya sudah dihapus): kandungan lama dipakai dan diskalakan.
   const recordEstimate: DrinkEstimate | null =

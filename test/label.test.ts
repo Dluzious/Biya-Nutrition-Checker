@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { normalizeAmount } from "../src/shared/nutrients";
-import { labelToDraft } from "../src/worker/ai";
+import { foodToEstimate, labelToDraft } from "../src/worker/ai";
 
 describe("normalizeAmount", () => {
   it("mengonversi satuan umum", () => {
@@ -55,5 +55,32 @@ describe("labelToDraft", () => {
     });
     expect(d.servingVolumeMl).toBe(100);
     expect(d.nutrients.energy_kcal).toBe(150);
+  });
+});
+
+describe("foodToEstimate", () => {
+  it("membuang kunci tak dikenal dan angka negatif", () => {
+    const e = foodToEstimate({
+      is_food: true,
+      name: " Bubur ayam ",
+      portion_description: "1 mangkuk",
+      items: [{ name: "bubur", grams: 250, energy_kcal: 180, protein_g: -2 }],
+      total_grams: 300,
+      fluid_ml: -10,
+      nutrients: [
+        { key: "energy_kcal", amount: 280 },
+        { key: "protein_g", amount: 14 },
+        { key: "bukan_zat", amount: 5 },
+        { key: "fat_g", amount: -1 },
+      ],
+      diet_fit: { status: "sebagian", notes: ["Sisihkan kerupuk"] },
+      assumptions: ["a", "b", "c", "d"],
+      confidence: "sedang",
+    });
+    expect(e.name).toBe("Bubur ayam");
+    expect(e.nutrients).toEqual({ energy_kcal: 280, protein_g: 14 });
+    expect(e.fluidMl).toBe(0);
+    expect(e.items[0].proteinG).toBe(0);
+    expect(e.assumptions).toHaveLength(3);
   });
 });

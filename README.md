@@ -8,6 +8,7 @@ Aplikasi pemantau kecukupan nutrisi untuk pasien yang menjalani **diet cair** (m
 
 - **Target harian** energi, protein, dan cairan dihitung dari berat dan tinggi badan, usia, aktivitas, dan kondisi medis (fungsi ginjal, diabetes, batasan cairan, risiko *refeeding*). Bisa diganti dengan target dari dokter.
 - **Catat minum** per ml atau per porsi. Kalori, protein, karbohidrat, lemak, vitamin, dan mineral dihitung otomatis dari data produk.
+- **Diet lunak** (pilih tahap diet di menu Pasien): **Catat makan** dari makanan tersimpan, atau **foto makanan / ketik nama makanan → AI** memperkirakan komponen, berat porsi, kalori, gizi, kandungan air/kuah, dan kesesuaiannya dengan diet lunak. Pilih berapa yang dihabiskan (¼–habis), koreksi angka bila perlu, dan simpan makanan yang sering dimakan.
 - **Foto label produk → AI** membaca tabel Informasi Nilai Gizi. Hasilnya diperiksa dulu sebelum disimpan, dan bisa diubah kapan saja bila formula produk berubah.
 - **Minum berikutnya**: saran jam, produk, dan jumlah ml supaya target tercapai, dengan batas volume sekali minum.
 - **Pengingat** di jam jadwal, pengingat sekali ("ingatkan 2 jam lagi"), dan **peringatan ke pendamping** bila jadwal terlewat.

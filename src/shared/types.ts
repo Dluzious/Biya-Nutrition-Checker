@@ -9,6 +9,14 @@ export interface Member {
 }
 
 export type Activity = "baring" | "terbatas" | "aktif";
+/** Tahap diet dari dokter: hanya cair, cair + mulai lunak, atau lunak. */
+export type DietStage = "cair" | "cair_lunak" | "lunak";
+
+export const DIET_STAGE_LABEL: Record<DietStage, string> = {
+  cair: "Diet cair",
+  cair_lunak: "Cair + mulai lunak",
+  lunak: "Diet lunak",
+};
 export type KidneyStatus = "normal" | "ckd" | "dialisis";
 export type RefeedingSetting = "auto" | "rendah" | "sedang" | "tinggi" | "sangat_tinggi";
 
@@ -17,6 +25,7 @@ export interface PatientProfile {
   diagnosis: string;
   /** Instruksi diet dari dokter, mis. "Diet cair: Nutrican & Fresubin". */
   dietOrder: string;
+  dietStage: DietStage;
   age: number | null;
   heightCm: number | null;
   /** Berat badan biasa sebelum sakit, untuk menghitung persentase penurunan. */
@@ -56,6 +65,7 @@ export const DEFAULT_PROFILE: PatientProfile = {
   name: "",
   diagnosis: "Melanoma maligna dengan metastasis ke lambung",
   dietOrder: "Diet cair — utamanya Nutrican dan Fresubin",
+  dietStage: "cair",
   age: null,
   heightCm: null,
   usualWeightKg: null,
@@ -78,7 +88,7 @@ export const DEFAULT_PROFILE: PatientProfile = {
   missedAlertMinutes: 45,
 };
 
-export type ProductForm = "cair" | "bubuk" | "lainnya";
+export type ProductForm = "cair" | "bubuk" | "makanan" | "lainnya";
 
 export interface Product {
   id: string;
@@ -90,6 +100,8 @@ export interface Product {
   /** Volume akhir 1 takaran saji setelah siap diminum (ml). */
   servingVolumeMl: number | null;
   servingGrams: number | null;
+  /** Makanan: perkiraan air/kuah per porsi yang dihitung sebagai cairan (ml). */
+  fluidMl: number | null;
   preparation: string;
   /** Kandungan per 1 takaran saji, dalam satuan kanonik. */
   nutrients: NutrientMap;
@@ -101,11 +113,13 @@ export interface Product {
 }
 
 export type IntakeUnit = "ml" | "porsi";
+export type IntakeKind = "minum" | "makan";
 
 export interface Intake {
   id: string;
   takenAt: string;
   localDate: string;
+  kind: IntakeKind;
   productId: string | null;
   productName: string;
   amount: number;

@@ -3,8 +3,8 @@ import { intakeFromProduct, sumIntakes } from "../shared/intake";
 import { NUTRIENT_KEYS, formatNutrient, scaleNutrients, type NutrientMap } from "../shared/nutrients";
 import { computeTargets } from "../shared/targets";
 import { addDays, isValidTimeZone, localParts } from "../shared/time";
-import { LAB_FIELDS, RED_FLAGS, type Intake, type Member } from "../shared/types";
-import { AiError, estimateDrink, evaluateIntake, modelFor, readLabel, suggestIntake } from "./ai";
+import { LAB_FIELDS, RED_FLAGS, type Intake, type IntakeKind, type Member } from "../shared/types";
+import { AiError, estimateDrink, estimateFood, evaluateIntake, modelFor, readLabel, suggestIntake } from "./ai";
 import { checkPassword, clearLoginFailures, issueToken, loginBlocked, recordLoginFailure, verifyToken } from "./auth";
 import { buildAiContext } from "./context";
 import {
@@ -81,6 +81,7 @@ const profileSchema = z.object({
   name: text(80),
   diagnosis: text(300),
   dietOrder: text(300),
+  dietStage: z.enum(["cair", "cair_lunak", "lunak"]).default("cair"),
   age: z.number().int().min(1).max(120).nullable(),
   heightCm: num.min(80).max(230).nullable(),
   usualWeightKg: num.min(20).max(250).nullable(),
@@ -114,10 +115,11 @@ const profileSchema = z.object({
 const productSchema = z.object({
   name: text(120).min(1),
   brand: text(80),
-  form: z.enum(["cair", "bubuk", "lainnya"]),
+  form: z.enum(["cair", "bubuk", "makanan", "lainnya"]),
   servingLabel: text(160),
   servingVolumeMl: posNum.max(2000).nullable(),
-  servingGrams: posNum.max(1000).nullable(),
+  servingGrams: posNum.max(2000).nullable(),
+  fluidMl: num.min(0).max(2000).nullable().default(null),
   preparation: text(600),
   nutrients: nutrientMapSchema,
   notes: text(1500),
@@ -130,6 +132,17 @@ const intakeSchema = z.union([
     productId: z.string().min(1),
     amount: posNum.max(5000),
     unit: z.enum(["ml", "porsi"]),
+    takenAt: z.string().datetime().optional(),
+    note: text(300).default(""),
+  }),
+  // Makanan tanpa produk tersimpan (mis. hasil analisis foto): jumlah dalam porsi.
+  z.object({
+    productId: z.null(),
+    kind: z.literal("makan"),
+    productName: text(120).min(1),
+    portions: posNum.max(10),
+    fluidMl: num.min(0).max(3000).default(0),
+    nutrients: nutrientMapSchema.optional(),
     takenAt: z.string().datetime().optional(),
     note: text(300).default(""),
   }),
@@ -257,10 +270,10 @@ route("POST", "/api/products", async ({ env, req }) => {
   const p = await body(req, productSchema);
   const id = newId();
   await env.DB.prepare(
-    `INSERT INTO products (id, name, brand, form, serving_label, serving_volume_ml, serving_grams, preparation, nutrients, notes, source, active)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO products (id, name, brand, form, serving_label, serving_volume_ml, serving_grams, fluid_ml, preparation, nutrients, notes, source, active)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
-    .bind(id, p.name, p.brand, p.form, p.servingLabel, p.servingVolumeMl, p.servingGrams, p.preparation, JSON.stringify(p.nutrients), p.notes, p.source, p.active ? 1 : 0)
+    .bind(id, p.name, p.brand, p.form, p.servingLabel, p.servingVolumeMl, p.servingGrams, p.fluidMl, p.preparation, JSON.stringify(p.nutrients), p.notes, p.source, p.active ? 1 : 0)
     .run();
   return jsonResponse({ product: await getProduct(env.DB, id) }, 201);
 });
@@ -268,10 +281,10 @@ route("POST", "/api/products", async ({ env, req }) => {
 route("PUT", "/api/products/:id", async ({ env, req, params }) => {
   const p = await body(req, productSchema);
   const res = await env.DB.prepare(
-    `UPDATE products SET name = ?, brand = ?, form = ?, serving_label = ?, serving_volume_ml = ?, serving_grams = ?, preparation = ?,
+    `UPDATE products SET name = ?, brand = ?, form = ?, serving_label = ?, serving_volume_ml = ?, serving_grams = ?, fluid_ml = ?, preparation = ?,
        nutrients = ?, notes = ?, source = ?, active = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?`,
   )
-    .bind(p.name, p.brand, p.form, p.servingLabel, p.servingVolumeMl, p.servingGrams, p.preparation, JSON.stringify(p.nutrients), p.notes, p.source, p.active ? 1 : 0, params.id)
+    .bind(p.name, p.brand, p.form, p.servingLabel, p.servingVolumeMl, p.servingGrams, p.fluidMl, p.preparation, JSON.stringify(p.nutrients), p.notes, p.source, p.active ? 1 : 0, params.id)
     .run();
   if (!res.meta.changes) throw new HttpError(404, "Produk tidak ditemukan.");
   return jsonResponse({ product: await getProduct(env.DB, params.id) });
@@ -327,6 +340,7 @@ route("GET", "/api/history", async ({ env, url }) => {
 
 // Asupan
 interface ResolvedIntake {
+  kind: IntakeKind;
   productId: string | null;
   productName: string;
   amount: number;
@@ -345,7 +359,15 @@ async function resolveIntake(env: Env, data: z.infer<typeof intakeSchema>, exist
     if (product) {
       try {
         const { volumeMl, nutrients } = intakeFromProduct(product, data.amount, data.unit);
-        return { productId: product.id, productName: product.name, amount: data.amount, unit: data.unit, volumeMl, nutrients };
+        return {
+          kind: product.form === "makanan" ? "makan" : "minum",
+          productId: product.id,
+          productName: product.name,
+          amount: data.amount,
+          unit: data.unit,
+          volumeMl,
+          nutrients,
+        };
       } catch (e) {
         throw new HttpError(400, (e as Error).message);
       }
@@ -355,6 +377,7 @@ async function resolveIntake(env: Env, data: z.infer<typeof intakeSchema>, exist
     }
     const factor = data.amount / existing.amount;
     return {
+      kind: existing.kind,
       productId: existing.productId,
       productName: existing.productName,
       amount: data.amount,
@@ -363,11 +386,27 @@ async function resolveIntake(env: Env, data: z.infer<typeof intakeSchema>, exist
       nutrients: scaleNutrients(existing.nutrients, factor),
     };
   }
+  if ("kind" in data) {
+    let nutrients = data.nutrients;
+    if (!nutrients && existing && existing.productId === null && existing.amount > 0) {
+      nutrients = scaleNutrients(existing.nutrients, data.portions / existing.amount);
+    }
+    return {
+      kind: "makan",
+      productId: null,
+      productName: data.productName,
+      amount: data.portions,
+      unit: "porsi",
+      volumeMl: data.fluidMl,
+      nutrients: nutrients ?? {},
+    };
+  }
   let nutrients = data.nutrients;
   if (!nutrients && existing && existing.productId === null && existing.volumeMl > 0) {
     nutrients = scaleNutrients(existing.nutrients, data.volumeMl / existing.volumeMl);
   }
   return {
+    kind: "minum",
     productId: null,
     productName: data.productName,
     amount: data.volumeMl,
@@ -433,14 +472,14 @@ route("POST", "/api/intakes", async ({ env, req, me }) => {
   const takenAt = parseTakenAt(data.takenAt);
   const localDate = localParts(takenAt, profile.timezone).date;
   const before = await dayTotals(env, localDate);
-  const { productId, productName, amount, unit, volumeMl, nutrients } = await resolveIntake(env, data);
+  const { kind, productId, productName, amount, unit, volumeMl, nutrients } = await resolveIntake(env, data);
 
   const id = newId();
   await env.DB.prepare(
-    `INSERT INTO intakes (id, taken_at, local_date, product_id, product_name, amount, unit, volume_ml, nutrients, note, logged_by)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO intakes (id, taken_at, local_date, kind, product_id, product_name, amount, unit, volume_ml, nutrients, note, logged_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
-    .bind(id, takenAt.toISOString(), localDate, productId, productName, amount, unit, volumeMl, JSON.stringify(nutrients), data.note, me.id)
+    .bind(id, takenAt.toISOString(), localDate, kind, productId, productName, amount, unit, volumeMl, JSON.stringify(nutrients), data.note, me.id)
     .run();
 
   await celebrateIfReached(env, me, localDate, before);
@@ -449,8 +488,8 @@ route("POST", "/api/intakes", async ({ env, req, me }) => {
     env,
     "activity",
     {
-      title: `${profile.name || "Pasien"} minum ${productName}`,
-      body: `${Math.round(volumeMl) || amount} ${volumeMl ? "ml" : unit}${kcal} — dicatat oleh ${me.name}.`,
+      title: `${profile.name || "Pasien"} ${kind === "makan" ? "makan" : "minum"} ${productName}`,
+      body: `${kind === "makan" ? `${amount} porsi` : `${Math.round(volumeMl) || amount} ${volumeMl ? "ml" : unit}`}${kcal} — dicatat oleh ${me.name}.`,
       tag: "activity",
       url: "/",
     },
@@ -470,10 +509,10 @@ route("PUT", "/api/intakes/:id", async ({ env, req, params, me }) => {
   const before = await dayTotals(env, localDate, existing.id);
   const r = await resolveIntake(env, data, existing);
   await env.DB.prepare(
-    `UPDATE intakes SET taken_at = ?, local_date = ?, product_id = ?, product_name = ?, amount = ?, unit = ?, volume_ml = ?,
+    `UPDATE intakes SET taken_at = ?, local_date = ?, kind = ?, product_id = ?, product_name = ?, amount = ?, unit = ?, volume_ml = ?,
        nutrients = ?, note = ? WHERE id = ?`,
   )
-    .bind(takenAt.toISOString(), localDate, r.productId, r.productName, r.amount, r.unit, r.volumeMl, JSON.stringify(r.nutrients), data.note, existing.id)
+    .bind(takenAt.toISOString(), localDate, r.kind, r.productId, r.productName, r.amount, r.unit, r.volumeMl, JSON.stringify(r.nutrients), data.note, existing.id)
     .run();
   await celebrateIfReached(env, me, localDate, before);
   return jsonResponse({ id: existing.id });
@@ -660,6 +699,24 @@ route("POST", "/api/ai/estimate", async ({ env, req }) => {
   const estimate = await estimateDrink(env, {
     description: data.description.trim(),
     volumeMl: data.volumeMl,
+    diagnosis: profile.diagnosis,
+    dietOrder: profile.dietOrder,
+  });
+  return jsonResponse({ estimate });
+});
+
+route("POST", "/api/ai/food", async ({ env, req }) => {
+  const data = await body(
+    req,
+    z.object({ images: z.array(imageSchema).max(3).default([]), description: text(300).default("") }),
+  );
+  if (!data.images.length && data.description.trim().length < 3) {
+    throw new HttpError(400, "Tambahkan foto makanan atau tulis nama makanannya.");
+  }
+  const { profile } = await today(env);
+  const estimate = await estimateFood(env, {
+    images: data.images,
+    description: data.description.trim(),
     diagnosis: profile.diagnosis,
     dietOrder: profile.dietOrder,
   });

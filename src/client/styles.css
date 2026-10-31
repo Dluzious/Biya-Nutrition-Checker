@@ -1081,3 +1081,14 @@ details > summary {
 .intake-row:active {
   background: var(--surface-2);
 }
+
+.grid-3 {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.grid-3 .btn {
+  padding-left: 8px;
+  padding-right: 8px;
+}

@@ -4,6 +4,7 @@ import { addDays, localParts, timeToMinutes } from "../../shared/time";
 import { RED_FLAGS, type Intake } from "../../shared/types";
 import { api } from "../api";
 import { EvaluationCard } from "../components/EvaluationCard";
+import { FoodSheet } from "../components/FoodSheet";
 import { LogIntakeSheet, SymptomSheet, type IntakePrefill } from "../components/sheets";
 import { ActionButton, ConfirmDialog, Confetti, Meter, NEAR_PCT, Spinner, fmt, fmtDate, fmtIn, fmtTime, minutesAgo } from "../components/ui";
 import { missingPatientData } from "../completeness";
@@ -13,7 +14,11 @@ export function TodayPage({ goTo }: { goTo: (tab: "pasien" | "produk" | "jadwal"
   const { boot, day, date, setDate, isToday, todayDate, targets, run, toast } = useApp();
   const tz = boot.profile.timezone;
   const [sheet, setSheet] = useState<
-    null | { kind: "intake"; prefill?: IntakePrefill } | { kind: "edit"; intake: Intake } | { kind: "symptom" }
+    | null
+    | { kind: "intake"; prefill?: IntakePrefill }
+    | { kind: "food" }
+    | { kind: "edit"; intake: Intake }
+    | { kind: "symptom" }
   >(() =>
     new URLSearchParams(location.search).has("log") ? { kind: "intake" } : null,
   );
@@ -22,6 +27,8 @@ export function TodayPage({ goTo }: { goTo: (tab: "pasien" | "produk" | "jadwal"
 
   const intakes = day?.intakes ?? [];
   const totals = useMemo(() => sumIntakes(intakes), [intakes]);
+  const allowFood = boot.profile.dietStage !== "cair";
+  const foodCount = intakes.filter((i) => i.kind === "makan").length;
 
   // Rayakan saat target hampir/sudah tercapai setelah ada catatan baru (bukan saat halaman dibuka).
   const pct = (v: number | undefined, t: number | undefined) => (t ? ((v ?? 0) / t) * 100 : null);
@@ -278,14 +285,28 @@ export function TodayPage({ goTo }: { goTo: (tab: "pasien" | "produk" | "jadwal"
         </div>
       )}
 
-      <div className="grid-2" style={{ marginBottom: 12 }}>
-        <button className="btn primary" onClick={() => setSheet({ kind: "intake" })}>
-          + Catat minum
-        </button>
-        <button className="btn" onClick={() => setSheet({ kind: "symptom" })}>
-          Catat gejala
-        </button>
-      </div>
+      {allowFood ? (
+        <div className="grid-3" style={{ marginBottom: 12 }}>
+          <button className="btn primary" onClick={() => setSheet({ kind: "intake" })}>
+            🥤 Minum
+          </button>
+          <button className="btn primary" onClick={() => setSheet({ kind: "food" })}>
+            🥣 Makan
+          </button>
+          <button className="btn" onClick={() => setSheet({ kind: "symptom" })}>
+            Gejala
+          </button>
+        </div>
+      ) : (
+        <div className="grid-2" style={{ marginBottom: 12 }}>
+          <button className="btn primary" onClick={() => setSheet({ kind: "intake" })}>
+            + Catat minum
+          </button>
+          <button className="btn" onClick={() => setSheet({ kind: "symptom" })}>
+            Catat gejala
+          </button>
+        </div>
+      )}
 
       <div className="card">
         <div className="card-header">
@@ -318,9 +339,9 @@ export function TodayPage({ goTo }: { goTo: (tab: "pasien" | "produk" | "jadwal"
 
       <div className="card">
         <div className="card-header">
-          <h2>Catatan minum</h2>
+          <h2>{allowFood || foodCount > 0 ? "Catatan makan & minum" : "Catatan minum"}</h2>
           <span className="small muted">
-            {intakes.length}× · {fmt(totals.volumeMl)} ml
+            {foodCount > 0 ? `${foodCount}× makan · ${intakes.length - foodCount}× minum` : `${intakes.length}×`} · {fmt(totals.volumeMl)} ml
           </span>
         </div>
         {intakes.length === 0 ? (
@@ -340,7 +361,11 @@ export function TodayPage({ goTo }: { goTo: (tab: "pasien" | "produk" | "jadwal"
                 <span className="time-badge">{fmtTime(i.takenAt, tz)}</span>
                 <div className="grow">
                   <div>
-                    {i.productName} · {fmt(i.unit === "ml" ? i.amount : i.volumeMl || i.amount, 2)} {i.unit === "ml" || i.volumeMl ? "ml" : "porsi"}
+                    <span aria-label={i.kind === "makan" ? "makan" : "minum"}>{i.kind === "makan" ? "🥣 " : "🥤 "}</span>
+                    {i.productName} ·{" "}
+                    {i.kind === "makan"
+                      ? `${fmt(i.amount, 2)} porsi`
+                      : `${fmt(i.unit === "ml" ? i.amount : i.volumeMl || i.amount, 2)} ${i.unit === "ml" || i.volumeMl ? "ml" : "porsi"}`}
                   </div>
                   <div className="small muted">
                     {i.nutrients.energy_kcal ? `${fmt(i.nutrients.energy_kcal)} kkal · ${fmt(i.nutrients.protein_g, 1)} g protein · ` : ""}
@@ -365,7 +390,7 @@ export function TodayPage({ goTo }: { goTo: (tab: "pasien" | "produk" | "jadwal"
             ))}
           </ul>
         )}
-        {intakes.length > 0 && <p className="tiny muted" style={{ marginTop: 6 }}>Ketuk catatan untuk mengubah jumlah, jam, atau produk.</p>}
+        {intakes.length > 0 && <p className="tiny muted" style={{ marginTop: 6 }}>Ketuk catatan untuk mengubah jumlah, jam, atau isinya.</p>}
       </div>
 
       {(day?.symptoms.length ?? 0) > 0 && (
@@ -430,7 +455,13 @@ export function TodayPage({ goTo }: { goTo: (tab: "pasien" | "produk" | "jadwal"
           }}
         />
       )}
-      {sheet?.kind === "edit" && <LogIntakeSheet editing={sheet.intake} onClose={() => setSheet(null)} />}
+      {sheet?.kind === "edit" &&
+        (sheet.intake.kind === "makan" ? (
+          <FoodSheet editing={sheet.intake} onClose={() => setSheet(null)} />
+        ) : (
+          <LogIntakeSheet editing={sheet.intake} onClose={() => setSheet(null)} />
+        ))}
+      {sheet?.kind === "food" && <FoodSheet onClose={() => setSheet(null)} />}
       {sheet?.kind === "symptom" && <SymptomSheet onClose={() => setSheet(null)} />}
       {celebrating.length > 0 && <Confetti />}
       {confirmAi &&

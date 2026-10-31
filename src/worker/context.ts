@@ -95,6 +95,7 @@ export async function buildAiContext(env: Env, date: string, now = new Date()) {
       nama: profile.name || "Pasien",
       diagnosis: profile.diagnosis,
       instruksi_diet: profile.dietOrder,
+      tahap_diet: profile.dietStage,
       usia: profile.age,
       tinggi_cm: profile.heightCm,
       bb_biasa_kg: profile.usualWeightKg,
@@ -133,8 +134,11 @@ export async function buildAiContext(env: Env, date: string, now = new Date()) {
       persen_cairan: pct(totals.volumeMl, targets.fluid?.target),
       persen_akg_mikro: microAdequacy,
       catatan_mikro: "null = kandungan tidak tercantum di label produk yang diminum, bukan berarti nol.",
-      catatan_minum: todays.map((i) => ({
+      energi_dari_makanan_kkal: Math.round(sumIntakes(todays.filter((i) => i.kind === "makan")).nutrients.energy_kcal ?? 0),
+      energi_dari_minuman_kkal: Math.round(sumIntakes(todays.filter((i) => i.kind !== "makan")).nutrients.energy_kcal ?? 0),
+      catatan_asupan: todays.map((i) => ({
         jam: localParts(new Date(i.takenAt), tz).time,
+        jenis: i.kind,
         produk: i.productName,
         jumlah: `${roundNutrient(i.amount)} ${i.unit}`,
         volume_ml: Math.round(i.volumeMl),
@@ -157,7 +161,7 @@ export async function buildAiContext(env: Env, date: string, now = new Date()) {
       .map((p) => ({
         nama: p.name,
         merek: p.brand,
-        bentuk: p.form,
+        bentuk: p.form === "makanan" ? "makanan lunak" : p.form,
         takaran_saji: p.servingLabel,
         volume_saji_ml: p.servingVolumeMl,
         sumber_data: p.source === "estimasi" ? "perkiraan AI (bukan label)" : p.source === "ai" ? "label kemasan (foto)" : "diisi manual",

@@ -29,6 +29,7 @@ const EMPTY: ProductDraft = {
   servingLabel: "",
   servingVolumeMl: null,
   servingGrams: null,
+  fluidMl: null,
   preparation: "",
   nutrients: {},
   notes: "",
@@ -58,7 +59,8 @@ function ProductEditor({
       p.form === "cair"
         ? (requiredError(p.servingVolumeMl, "Isi volume 1 takaran saji (ml)") ?? rangeError(p.servingVolumeMl, 1, 2000, "ml"))
         : rangeError(p.servingVolumeMl, 1, 2000, "ml"),
-    servingGrams: rangeError(p.servingGrams, 1, 1000, "g"),
+    servingGrams: rangeError(p.servingGrams, 1, 2000, "g"),
+    fluidMl: rangeError(p.fluidMl, 0, 2000, "ml"),
     energy_kcal: requiredError(p.nutrients.energy_kcal, "Isi energi per takaran saji"),
     protein_g: requiredError(p.nutrients.protein_g, "Isi protein per takaran saji"),
   };
@@ -85,7 +87,7 @@ function ProductEditor({
   };
 
   const remove = async () => {
-    if (!p.id || !confirm(`Hapus ${p.name}? Riwayat minum tetap tersimpan.`)) return;
+    if (!p.id || !confirm(`Hapus ${p.name}? Riwayat makan/minum tetap tersimpan.`)) return;
     const ok = await execRemove(() => api(`/api/products/${p.id}`, { method: "DELETE" }), "Produk dihapus", "Gagal menghapus");
     if (ok) onClose();
   };
@@ -127,17 +129,33 @@ function ProductEditor({
       <Field label="Bentuk">
         <Segmented
           value={p.form}
-          onChange={(form) => setP({ ...p, form })}
+          onChange={(form) => setP({ ...p, form, ...(form === "makanan" ? { servingVolumeMl: null } : {}) })}
           options={[
-            { value: "cair", label: "Cair siap minum" },
+            { value: "cair", label: "Cair" },
             { value: "bubuk", label: "Bubuk" },
+            { value: "makanan", label: "Makanan lunak" },
             { value: "lainnya", label: "Lainnya" },
           ]}
         />
       </Field>
-      <Field label="Takaran saji (seperti di label)">
-        <input type="text" value={p.servingLabel} placeholder="mis. 1 botol 200 ml / 6 sendok takar" onChange={(e) => setP({ ...p, servingLabel: e.target.value })} />
+      <Field label={p.form === "makanan" ? "Ukuran 1 porsi" : "Takaran saji (seperti di label)"}>
+        <input
+          type="text"
+          value={p.servingLabel}
+          placeholder={p.form === "makanan" ? "mis. 1 mangkuk sedang ±300 g" : "mis. 1 botol 200 ml / 6 sendok takar"}
+          onChange={(e) => setP({ ...p, servingLabel: e.target.value })}
+        />
       </Field>
+      {p.form === "makanan" ? (
+        <div className="grid-2">
+          <Field label="Berat 1 porsi (g)" error={errors.servingGrams}>
+            <NumberInput value={p.servingGrams} onChange={(v) => setP({ ...p, servingGrams: v })} />
+          </Field>
+          <Field label="Air/kuah (ml)" error={errors.fluidMl} hint="Dihitung sebagai cairan">
+            <NumberInput value={p.fluidMl} onChange={(v) => setP({ ...p, fluidMl: v })} />
+          </Field>
+        </div>
+      ) : (
       <div className="grid-2">
         <Field
           label="Volume siap minum (ml)"
@@ -151,12 +169,13 @@ function ProductEditor({
           <NumberInput value={p.servingGrams} onChange={(v) => setP({ ...p, servingGrams: v })} />
         </Field>
       </div>
+      )}
       {p.form === "bubuk" && (
         <Field label="Cara penyajian">
           <textarea value={p.preparation} onChange={(e) => setP({ ...p, preparation: e.target.value })} />
         </Field>
       )}
-      <h3>Kandungan per 1 takaran saji</h3>
+      <h3>Kandungan per {p.form === "makanan" ? "1 porsi" : "1 takaran saji"}</h3>
       {group("makro")}
       <details>
         <summary>Vitamin</summary>
@@ -335,7 +354,8 @@ export function ProductsPage() {
           >
             <div className="card-header">
               <h2>{p.name}</h2>
-              <span className="tiny muted">{p.active ? (p.source === "ai" ? "dari foto" : p.source === "estimasi" ? "perkiraan AI" : "manual") : "tidak dipakai"}</span>
+              <span className="tiny muted">{p.form === "makanan" ? "🥣 makanan · " : ""}
+                {p.active ? (p.source === "ai" ? "dari foto" : p.source === "estimasi" ? "perkiraan AI" : "manual") : "tidak dipakai"}</span>
             </div>
             <div className="small secondary">
               {[p.brand, p.servingLabel || (p.servingVolumeMl ? `${p.servingVolumeMl} ml` : null)].filter(Boolean).join(" · ")}
@@ -352,7 +372,7 @@ export function ProductsPage() {
               </span>
               {kcalPerMl !== null && <span className="muted">{fmt(kcalPerMl, 2)} kkal/ml</span>}
             </div>
-            {!p.servingVolumeMl && p.active && (
+            {!p.servingVolumeMl && p.active && p.form !== "makanan" && (
               <div className="tiny" style={{ color: "var(--critical)", marginTop: 6 }}>
                 Volume siap minum belum diisi — hanya bisa dicatat per porsi.
               </div>

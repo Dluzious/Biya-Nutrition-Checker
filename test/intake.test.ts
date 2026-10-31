@@ -10,6 +10,7 @@ const fresubin: Product = {
   servingLabel: "1 botol 200 ml",
   servingVolumeMl: 200,
   servingGrams: null,
+  fluidMl: null,
   preparation: "",
   nutrients: { energy_kcal: 400, protein_g: 20 },
   notes: "",
@@ -106,5 +107,42 @@ describe("suggestNext", () => {
       fluidRestricted: false,
     });
     expect(s.done).toBe(true);
+  });
+});
+
+describe("makanan lunak", () => {
+  const bubur: Product = {
+    ...fresubin,
+    id: "b",
+    name: "Bubur ayam",
+    form: "makanan",
+    servingLabel: "1 mangkuk ±300 g",
+    servingVolumeMl: null,
+    servingGrams: 300,
+    fluidMl: 150,
+    nutrients: { energy_kcal: 280, protein_g: 14 },
+  };
+
+  it("dicatat per porsi; hanya air/kuah yang dihitung sebagai cairan", () => {
+    expect(intakeFromProduct(bubur, 0.5, "porsi")).toEqual({ volumeMl: 75, nutrients: { energy_kcal: 140, protein_g: 7 } });
+    expect(() => intakeFromProduct(bubur, 100, "ml")).toThrow();
+  });
+
+  it("tidak dipakai untuk saran minum berikutnya", () => {
+    const s = suggestNext({
+      nowMinutes: 9 * 60,
+      schedule: [slot("10:00")],
+      products: [bubur],
+      totals: { nutrients: {}, volumeMl: 0, count: 0 },
+      targets: {
+        energy: { target: 1600, min: null, max: null, source: "rumus", basis: [] },
+        protein: { target: 80, min: null, max: null, source: "rumus", basis: [] },
+        fluid: { target: 1600, min: null, max: null, source: "rumus", basis: [] },
+      },
+      intakeMinutes: [],
+      maxVolumeMl: 200,
+      fluidRestricted: false,
+    });
+    expect(s.product).toBeNull();
   });
 });
