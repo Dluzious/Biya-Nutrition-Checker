@@ -2,6 +2,8 @@ import type {
   Evaluation,
   Intake,
   LabEntry,
+  MedLog,
+  Medication,
   Member,
   PatientProfile,
   Product,
@@ -92,6 +94,12 @@ export interface PendingReminder {
   createdByName: string | null;
 }
 
+export interface MedsData {
+  medications: Medication[];
+  logs: MedLog[];
+  now: LocalParts;
+}
+
 export interface DayData {
   date: string;
   now: LocalParts;
@@ -99,6 +107,9 @@ export interface DayData {
   symptoms: SymptomEntry[];
   evaluations: Evaluation[];
   reminders: PendingReminder[];
+  /** Obat aktif dan catatan obat pada tanggal itu. */
+  meds: Medication[];
+  medLogs: MedLog[];
 }
 
 export interface HistoryDay {

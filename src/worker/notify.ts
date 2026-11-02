@@ -1,4 +1,5 @@
 import { slotDone } from "../shared/intake";
+import { PERIODIC_REMINDER_DAYS, PERIODIC_REMINDER_MINUTES, daysUntil, periodicReminderLabel } from "../shared/meds";
 import { localParts, timeToMinutes } from "../shared/time";
 import type { PushPrefs } from "../shared/types";
 import {
@@ -8,6 +9,8 @@ import {
   getVapidKeys,
   listIntakes,
   listProducts,
+  listMedLogs,
+  listMedications,
   listSchedule,
   listSubscriptions,
   type Env,
@@ -111,6 +114,8 @@ export async function runScheduledChecks(env: Env, now = new Date()) {
     }
   }
 
+  await runMedicationChecks(env, profile, date, minutes);
+
   const { results: due } = await env.DB.prepare(
     "SELECT id, message FROM reminders WHERE sent_at IS NULL AND due_at <= ? ORDER BY due_at LIMIT 20",
   )
@@ -130,5 +135,68 @@ export async function runScheduledChecks(env: Env, now = new Date()) {
       env.DB.prepare("DELETE FROM sent_log WHERE at < ?").bind(cutoff),
       env.DB.prepare("DELETE FROM reminders WHERE sent_at IS NOT NULL AND sent_at < ?").bind(cutoff),
     ]);
+  }
+}
+
+const MED_DAY_NAMES = ["Minggu", "Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu"];
+const MED_MONTHS = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"];
+
+function medDateLabel(date: string): string {
+  const [y, m, d] = date.split("-").map(Number);
+  return `${MED_DAY_NAMES[new Date(Date.UTC(y, m - 1, d)).getUTCDay()]}, ${d} ${MED_MONTHS[m - 1]}`;
+}
+
+/** Pengingat obat harian (di jamnya + peringatan terlewat) dan obat berkala (H-7, H-2, hari H). */
+async function runMedicationChecks(
+  env: Env,
+  profile: Awaited<ReturnType<typeof getProfile>>,
+  date: string,
+  minutes: number,
+) {
+  const meds = (await listMedications(env.DB)).filter((m) => m.active);
+  if (!meds.length) return;
+  const logs = await listMedLogs(env.DB, date, date);
+  const patient = profile.name || "Pasien";
+
+  for (const med of meds) {
+    const what = [med.name, med.dose].filter(Boolean).join(" ");
+    if (med.kind === "harian") {
+      if (date < med.startDate) continue;
+      for (const time of med.times) {
+        const t = timeToMinutes(time);
+        const logged = logs.some((l) => l.medicationId === med.id && l.scheduledTime === time);
+        if (!logged && minutes >= t && minutes - t <= CATCH_UP_MINUTES && (await claim(env.DB, `med:${med.id}:${date}:${time}`))) {
+          await notify(env, "medications", {
+            title: `💊 Waktunya minum obat — ${time}`,
+            body: [what, med.instructions].filter(Boolean).join(" · "),
+            tag: `med-${med.id}-${time}`,
+            url: "/?tab=obat",
+          });
+        }
+        const missedAt = t + profile.missedAlertMinutes;
+        if (minutes >= missedAt && minutes - missedAt <= 15 && missedAt < 24 * 60) {
+          if ((await claim(env.DB, `medmiss:${med.id}:${date}:${time}`)) && !logged) {
+            await notify(env, "missed", {
+              title: `💊 Obat ${time} belum tercatat`,
+              body: `${patient} belum tercatat minum ${what}. Mohon dicek.`,
+              tag: `medmiss-${med.id}-${time}`,
+              url: "/?tab=obat",
+            });
+          }
+        }
+      }
+    } else if (med.nextDate && minutes >= PERIODIC_REMINDER_MINUTES) {
+      const days = daysUntil(date, med.nextDate);
+      const label = periodicReminderLabel(days);
+      if (!label || !(PERIODIC_REMINDER_DAYS as readonly number[]).includes(days)) continue;
+      if (!(await claim(env.DB, `medper:${med.id}:${med.nextDate}:${days}`))) continue;
+      const when = [medDateLabel(med.nextDate), med.nextTime, med.location].filter(Boolean).join(" · ");
+      await notify(env, "medications", {
+        title: `📅 ${label}: ${med.name}`,
+        body: `Jadwal ${what} — ${when}.${days === 0 ? " Jangan lupa ya!" : " Siapkan dari sekarang."}`,
+        tag: `medper-${med.id}`,
+        url: "/?tab=obat",
+      });
+    }
   }
 }

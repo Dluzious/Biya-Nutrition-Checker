@@ -11,6 +11,7 @@ Aplikasi pemantau kecukupan nutrisi untuk pasien yang menjalani **diet cair** (m
 - **Diet lunak** (pilih tahap diet di menu Pasien): **Catat makan** dari makanan tersimpan, atau **foto makanan / ketik nama makanan → AI** memperkirakan komponen, berat porsi, kalori, gizi, kandungan air/kuah, dan kesesuaiannya dengan diet lunak. Pilih berapa yang dihabiskan (¼–habis), koreksi angka bila perlu, dan simpan makanan yang sering dimakan.
 - **Foto label produk → AI** membaca tabel Informasi Nilai Gizi. Hasilnya diperiksa dulu sebelum disimpan, dan bisa diubah kapan saja bila formula produk berubah.
 - **Minum berikutnya**: saran jam, produk, dan jumlah ml supaya target tercapai, dengan batas volume sekali minum.
+- **Obat** (menu tersendiri): obat harian dengan notifikasi di jam minum, tombol Sudah/Lewati, dan peringatan ke pendamping bila terlewat; obat berkala/bulanan (mis. terapi tiap 3–4 minggu) dengan pengingat H-7, H-2, dan pagi hari H, tanggal berikutnya dihitung otomatis; riwayat kepatuhan harian, mingguan, bulanan.
 - **Pengingat** di jam jadwal, pengingat sekali ("ingatkan 2 jam lagi"), dan **peringatan ke pendamping** bila jadwal terlewat.
 - **Catatan gejala** (mual, muntah, begah, diare, nyeri) dan **tanda bahaya**. Tanda bahaya langsung mengirim notifikasi ke anggota keluarga lain.
 - **Evaluasi AI** kecukupan nutrisi (hari ini + tren 7 hari, berat badan, gejala, lab) dan **saran AI** untuk minum berikutnya.

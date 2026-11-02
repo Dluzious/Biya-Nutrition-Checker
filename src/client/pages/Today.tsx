@@ -7,10 +7,81 @@ import { EvaluationCard } from "../components/EvaluationCard";
 import { FoodSheet } from "../components/FoodSheet";
 import { LogIntakeSheet, SymptomSheet, type IntakePrefill } from "../components/sheets";
 import { ActionButton, ConfirmDialog, Confetti, Meter, NEAR_PCT, Spinner, fmt, fmtDate, fmtIn, fmtTime, minutesAgo } from "../components/ui";
+import { dailySlots, daysUntil } from "../../shared/meds";
 import { missingPatientData } from "../completeness";
 import { useAction, useApp } from "../store";
 
-export function TodayPage({ goTo }: { goTo: (tab: "pasien" | "produk" | "jadwal") => void }) {
+function MedsTodayCard({ goTo }: { goTo: () => void }) {
+  const { boot, day, todayDate, run } = useApp();
+  const [busy, setBusy] = useState(false);
+  if (!day || day.date !== todayDate) return null;
+  const now = localParts(new Date(), boot.profile.timezone).minutes;
+  const slots = dailySlots(day.meds, day.medLogs, todayDate, now);
+  const periodicSoon = day.meds
+    .filter((m) => m.kind === "berkala" && m.nextDate && daysUntil(todayDate, m.nextDate) <= 7)
+    .sort((a, b) => (a.nextDate! < b.nextDate! ? -1 : 1));
+  if (!slots.length && !periodicSoon.length) return null;
+  const overdue = slots.filter((s) => s.state === "terlewat");
+  const next = slots.find((s) => s.state === "terlewat" || s.state === "sekarang") ?? slots.find((s) => s.state === "nanti");
+  const taken = slots.filter((s) => s.state === "diminum").length;
+  const markNext = async () => {
+    if (!next) return;
+    setBusy(true);
+    await run(
+      () => api(`/api/meds/${next.med.id}/logs`, { body: { scheduledDate: todayDate, scheduledTime: next.time, status: "diminum" } }),
+      `${next.med.name} ${next.time} tercatat diminum 💊`,
+    );
+    setBusy(false);
+  };
+  return (
+    <div className="card">
+      <div className="card-header">
+        <h2>💊 Obat hari ini</h2>
+        {slots.length > 0 && (
+          <span className="small muted">
+            {taken}/{slots.length} diminum
+          </span>
+        )}
+      </div>
+      {overdue.length > 0 && (
+        <p className="field-error" role="alert">
+          {overdue.length} dosis terlewat: {overdue.map((s) => `${s.time} ${s.med.name}`).join(", ")}
+        </p>
+      )}
+      {next ? (
+        <div className="row spread" style={{ alignItems: "flex-start" }}>
+          <div className="grow">
+            <div>
+              <strong>{next.time}</strong> · {next.med.name} {next.med.dose && <span className="secondary">{next.med.dose}</span>}
+            </div>
+            {next.med.instructions && <div className="small muted">{next.med.instructions}</div>}
+          </div>
+          {next.state !== "nanti" && (
+            <ActionButton className="btn primary sm" busy={busy} busyText="…" attention onClick={markNext}>
+              ✓ Sudah
+            </ActionButton>
+          )}
+        </div>
+      ) : (
+        slots.length > 0 && <p className="small" style={{ color: "var(--good-text)", fontWeight: 600 }}>✓ Semua obat harian hari ini sudah tercatat.</p>
+      )}
+      {periodicSoon.map((m) => {
+        const d = daysUntil(todayDate, m.nextDate!);
+        return (
+          <p key={m.id} className="small" style={{ marginTop: 8, color: d <= 2 ? "var(--critical)" : undefined, fontWeight: d <= 2 ? 600 : 400 }}>
+            📅 {m.name} — {fmtDate(m.nextDate!)}
+            {m.nextTime ? ` ${m.nextTime}` : ""} ({d < 0 ? `lewat ${-d} hari` : d === 0 ? "hari ini" : `${d} hari lagi`})
+          </p>
+        );
+      })}
+      <button className="btn ghost sm" style={{ marginTop: 4, marginLeft: -10, color: "var(--accent)" }} onClick={goTo}>
+        Buka menu Obat ›
+      </button>
+    </div>
+  );
+}
+
+export function TodayPage({ goTo }: { goTo: (tab: "pasien" | "produk" | "jadwal" | "obat") => void }) {
   const { boot, day, date, setDate, isToday, todayDate, targets, run, toast } = useApp();
   const tz = boot.profile.timezone;
   const [sheet, setSheet] = useState<
@@ -299,6 +370,8 @@ export function TodayPage({ goTo }: { goTo: (tab: "pasien" | "produk" | "jadwal"
           </div>
         </div>
       )}
+
+      {isToday && <MedsTodayCard goTo={() => goTo("obat")} />}
 
       <div className="grid-3" style={{ marginBottom: 12 }}>
         <button className="btn primary" onClick={() => setSheet({ kind: "intake" })}>

@@ -3,9 +3,12 @@ import { NUTRIENT_BY_KEY, NUTRIENT_KEYS, roundNutrient, type NutrientMap } from 
 import { computeTargets } from "../shared/targets";
 import { addDays, localParts, timeToMinutes } from "../shared/time";
 import { RED_FLAGS } from "../shared/types";
+import { adherence } from "../shared/meds";
 import {
   getProfile,
   listIntakes,
+  listMedLogs,
+  listMedications,
   listLabs,
   listProducts,
   listSchedule,
@@ -38,14 +41,18 @@ export async function buildAiContext(env: Env, date: string, now = new Date()) {
   const isToday = date === nowLocal.date;
   const from = addDays(date, -6);
 
-  const [products, schedule, intakes, symptoms, weights, labs] = await Promise.all([
+  const [products, schedule, intakes, symptoms, weights, labs, meds, medLogs] = await Promise.all([
     listProducts(env.DB),
     listSchedule(env.DB),
     listIntakes(env.DB, from, date),
     listSymptoms(env.DB, addDays(date, -2), date),
     listWeights(env.DB),
     listLabs(env.DB),
+    listMedications(env.DB),
+    listMedLogs(env.DB, addDays(date, -6), date),
   ]);
+  const activeMeds = meds.filter((m) => m.active);
+  const medAdherence = adherence(activeMeds, medLogs, addDays(date, -6), date, nowLocal.date, isToday ? nowLocal.minutes : 24 * 60);
 
   const targets = computeTargets({ profile, weights, labs, today: date });
   const todays = intakes.filter((i) => i.localDate === date);
@@ -179,6 +186,17 @@ export async function buildAiContext(env: Env, date: string, now = new Date()) {
       catatan: s.note || undefined,
     })),
     skala_gejala: "0 = tidak ada, 1 = ringan, 2 = sedang, 3 = berat",
+    obat: {
+      catatan: "Hanya informasi. Jangan menyarankan mengubah, menambah, atau menghentikan obat.",
+      aktif: activeMeds.map((m) => ({
+        nama: m.name,
+        dosis: m.dose,
+        jenis: m.kind,
+        jadwal: m.kind === "harian" ? m.times.join(", ") : `berikutnya ${m.nextDate ?? "-"}`,
+        aturan: m.instructions || undefined,
+      })),
+      kepatuhan_obat_harian_7_hari: medAdherence,
+    },
     riwayat_bb: weights.slice(-12).map((w) => ({ tanggal: w.date, kg: w.kg })),
     lab_terbaru: labs.slice(0, 3),
     deterministic_suggestion: {

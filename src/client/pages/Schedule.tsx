@@ -13,6 +13,7 @@ const PREF_LABELS: { key: keyof PushPrefs; label: string; hint: string }[] = [
   { key: "alerts", label: "Tanda bahaya", hint: "Bila ada gejala berbahaya yang dicatat" },
   { key: "activity", label: "Aktivitas minum", hint: "Setiap ada catatan minum dari anggota lain" },
   { key: "achievements", label: "Target tercapai 🎉", hint: "Saat target energi/protein harian tercapai" },
+  { key: "medications", label: "Pengingat obat 💊", hint: "Jam minum obat harian & jadwal obat berkala (H-7, H-2, hari H)" },
 ];
 
 function NotificationCard() {

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { intakeFromProduct, sumIntakes } from "../shared/intake";
 import { NUTRIENT_KEYS, formatNutrient, scaleNutrients, type NutrientMap } from "../shared/nutrients";
+import { nextPeriodicDate } from "../shared/meds";
 import { computeTargets } from "../shared/targets";
 import { addDays, isValidTimeZone, localParts } from "../shared/time";
 import { LAB_FIELDS, RED_FLAGS, type Intake, type IntakeKind, type Member } from "../shared/types";
@@ -16,6 +17,8 @@ import {
   getVapidKeys,
   intakeFromRow,
   listEvaluations,
+  listMedLogs,
+  listMedications,
   listIntakes,
   listLabs,
   listMembers,
@@ -189,6 +192,35 @@ const prefsSchema = z.object({
   alerts: z.boolean(),
   activity: z.boolean(),
   achievements: z.boolean().default(true),
+  medications: z.boolean().default(true),
+});
+
+const medSchema = z
+  .object({
+    name: text(120).min(1),
+    dose: text(120),
+    kind: z.enum(["harian", "berkala"]),
+    times: z.array(timeStr).max(8),
+    instructions: text(200),
+    nextDate: dateStr.nullable(),
+    nextTime: timeStr.nullable(),
+    intervalDays: z.number().int().min(1).max(365).nullable(),
+    location: text(160),
+    active: z.boolean(),
+    notes: text(500),
+  })
+  .refine((m) => (m.kind === "harian" ? m.times.length > 0 : m.nextDate !== null), {
+    message: "obat harian butuh minimal 1 jam minum; obat berkala butuh tanggal jadwal",
+  })
+  .transform((m) => ({ ...m, times: [...new Set(m.times)].sort() }));
+
+const medLogSchema = z.object({
+  scheduledDate: dateStr,
+  scheduledTime: timeStr.nullable(),
+  status: z.enum(["diminum", "dilewati"]),
+  note: text(300).default(""),
+  /** Obat berkala: majukan tanggal berikutnya sesuai jarak hari. */
+  advance: z.boolean().default(true),
 });
 
 const imageSchema = z.object({
@@ -304,7 +336,7 @@ route("GET", "/api/day", async ({ env, url }) => {
   const { local } = await today(env);
   const date = url.searchParams.get("date") ?? local.date;
   if (!dateStr.safeParse(date).success) throw new HttpError(400, "Tanggal tidak valid.");
-  const [intakes, symptoms, evaluations, reminders] = await Promise.all([
+  const [intakes, symptoms, evaluations, reminders, meds, medLogs] = await Promise.all([
     listIntakes(env.DB, date, date),
     listSymptoms(env.DB, date, date),
     listEvaluations(env.DB, 10, date),
@@ -312,8 +344,19 @@ route("GET", "/api/day", async ({ env, url }) => {
       `SELECT r.id, r.due_at AS dueAt, r.message, m.name AS createdByName FROM reminders r
        LEFT JOIN members m ON m.id = r.created_by WHERE r.sent_at IS NULL ORDER BY r.due_at`,
     ).all(),
+    listMedications(env.DB),
+    listMedLogs(env.DB, date, date),
   ]);
-  return jsonResponse({ date, now: local, intakes, symptoms, evaluations, reminders: reminders.results });
+  return jsonResponse({
+    date,
+    now: local,
+    intakes,
+    symptoms,
+    evaluations,
+    reminders: reminders.results,
+    meds: meds.filter((m) => m.active),
+    medLogs,
+  });
 });
 
 route("GET", "/api/history", async ({ env, url }) => {
@@ -583,6 +626,87 @@ route("POST", "/api/labs", async ({ env, req, me }) => {
 
 route("DELETE", "/api/labs/:id", async ({ env, params }) => {
   await env.DB.prepare("DELETE FROM labs WHERE id = ?").bind(params.id).run();
+  return jsonResponse({ ok: true });
+});
+
+// Obat
+route("GET", "/api/meds", async ({ env, url }) => {
+  const { local } = await today(env);
+  const to = url.searchParams.get("to") ?? local.date;
+  const from = url.searchParams.get("from") ?? addDays(to, -30);
+  if (!dateStr.safeParse(from).success || !dateStr.safeParse(to).success) throw new HttpError(400, "Tanggal tidak valid.");
+  const [medications, logs] = await Promise.all([listMedications(env.DB), listMedLogs(env.DB, from, to)]);
+  return jsonResponse({ medications, logs, now: local });
+});
+
+route("POST", "/api/meds", async ({ env, req }) => {
+  const m = await body(req, medSchema);
+  const { local } = await today(env);
+  const id = newId();
+  await env.DB.prepare(
+    `INSERT INTO medications (id, name, dose, kind, times, instructions, next_date, next_time, interval_days, location, start_date, active, notes)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  )
+    .bind(id, m.name, m.dose, m.kind, JSON.stringify(m.times), m.instructions, m.nextDate, m.nextTime, m.intervalDays, m.location, local.date, m.active ? 1 : 0, m.notes)
+    .run();
+  return jsonResponse({ id }, 201);
+});
+
+route("PUT", "/api/meds/:id", async ({ env, req, params }) => {
+  const m = await body(req, medSchema);
+  const res = await env.DB.prepare(
+    `UPDATE medications SET name = ?, dose = ?, kind = ?, times = ?, instructions = ?, next_date = ?, next_time = ?, interval_days = ?,
+       location = ?, active = ?, notes = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?`,
+  )
+    .bind(m.name, m.dose, m.kind, JSON.stringify(m.times), m.instructions, m.nextDate, m.nextTime, m.intervalDays, m.location, m.active ? 1 : 0, m.notes, params.id)
+    .run();
+  if (!res.meta.changes) throw new HttpError(404, "Obat tidak ditemukan.");
+  return jsonResponse({ ok: true });
+});
+
+route("DELETE", "/api/meds/:id", async ({ env, params }) => {
+  // Catatan minum obat menyimpan nama obat, jadi riwayatnya tetap terbaca.
+  await env.DB.prepare("DELETE FROM medications WHERE id = ?").bind(params.id).run();
+  return jsonResponse({ ok: true });
+});
+
+route("POST", "/api/meds/:id/logs", async ({ env, req, params, me }) => {
+  const data = await body(req, medLogSchema);
+  const med = (await listMedications(env.DB)).find((m) => m.id === params.id);
+  if (!med) throw new HttpError(404, "Obat tidak ditemukan.");
+  if (med.kind === "harian" && (!data.scheduledTime || !med.times.includes(data.scheduledTime))) {
+    throw new HttpError(400, "Jam jadwal obat tidak cocok.");
+  }
+  const { local } = await today(env);
+  if (data.scheduledDate > local.date) throw new HttpError(400, "Tidak bisa mencatat obat untuk tanggal yang akan datang.");
+  const id = newId();
+  const time = med.kind === "harian" ? data.scheduledTime : null;
+  const stmts = [];
+  // Satu catatan per dosis harian: catatan baru menggantikan yang lama (mis. "lewati" → "sudah").
+  if (time) {
+    stmts.push(
+      env.DB.prepare("DELETE FROM med_logs WHERE medication_id = ? AND scheduled_date = ? AND scheduled_time = ?").bind(med.id, data.scheduledDate, time),
+    );
+  }
+  stmts.push(
+    env.DB.prepare(
+      `INSERT INTO med_logs (id, medication_id, med_name, scheduled_date, scheduled_time, status, taken_at, note, logged_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(id, med.id, med.name, data.scheduledDate, time, data.status, new Date().toISOString(), data.note, me.id),
+  );
+  let nextDate = med.nextDate;
+  if (med.kind === "berkala" && data.status === "diminum" && data.advance) {
+    nextDate = nextPeriodicDate(data.scheduledDate, med.intervalDays);
+    stmts.push(
+      env.DB.prepare("UPDATE medications SET next_date = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?").bind(nextDate, med.id),
+    );
+  }
+  await env.DB.batch(stmts);
+  return jsonResponse({ id, nextDate }, 201);
+});
+
+route("DELETE", "/api/meds/logs/:id", async ({ env, params }) => {
+  await env.DB.prepare("DELETE FROM med_logs WHERE id = ?").bind(params.id).run();
   return jsonResponse({ ok: true });
 });
 

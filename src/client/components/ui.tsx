@@ -402,7 +402,7 @@ export function Spinner() {
   return <span className="spinner" aria-label="Memuat" />;
 }
 
-export function Icon({ name }: { name: "today" | "chart" | "clock" | "bottle" | "user" }) {
+export function Icon({ name }: { name: "today" | "chart" | "clock" | "bottle" | "pill" | "user" }) {
   const common = { fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
   switch (name) {
     case "today":
@@ -429,6 +429,13 @@ export function Icon({ name }: { name: "today" | "chart" | "clock" | "bottle" | 
         <svg viewBox="0 0 24 24" aria-hidden>
           <path {...common} d="M10 3h4v3l2 3v11a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1V9l2-3z" />
           <path {...common} d="M8 13h8" />
+        </svg>
+      );
+    case "pill":
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden>
+          <rect {...common} x="3.2" y="8.5" width="17.6" height="7" rx="3.5" transform="rotate(-45 12 12)" />
+          <path {...common} d="M9.5 9.5l5 5" />
         </svg>
       );
     case "user":

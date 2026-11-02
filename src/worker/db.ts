@@ -2,6 +2,8 @@ import { DEFAULT_PROFILE } from "../shared/types";
 import type {
   Evaluation,
   Intake,
+  MedLog,
+  Medication,
   LabEntry,
   Member,
   PatientProfile,
@@ -253,8 +255,8 @@ export async function listEvaluations(db: D1Database, limit: number, localDate?:
 }
 
 export const DEFAULT_PREFS: Record<Member["role"], PushPrefs> = {
-  pasien: { reminders: true, missed: false, alerts: true, activity: false, achievements: true },
-  pendamping: { reminders: true, missed: true, alerts: true, activity: true, achievements: true },
+  pasien: { reminders: true, missed: false, alerts: true, activity: false, achievements: true, medications: true },
+  pendamping: { reminders: true, missed: true, alerts: true, activity: true, achievements: true, medications: true },
 };
 
 export interface SubscriptionRow {
@@ -278,5 +280,51 @@ export async function listSubscriptions(db: D1Database): Promise<SubscriptionRow
     // Langganan lama belum punya kunci `achievements`; kunci yang hilang memakai nilai bawaan (aktif).
     prefs: { ...DEFAULT_PREFS.pendamping, ...json<Partial<PushPrefs>>(r.prefs, {}) },
     device: String(r.device ?? ""),
+  }));
+}
+
+export function medicationFromRow(r: Row): Medication {
+  return {
+    id: String(r.id),
+    name: String(r.name),
+    dose: String(r.dose ?? ""),
+    kind: r.kind === "berkala" ? "berkala" : "harian",
+    times: json<string[]>(r.times, []),
+    instructions: String(r.instructions ?? ""),
+    nextDate: (r.next_date as string | null) ?? null,
+    nextTime: (r.next_time as string | null) ?? null,
+    intervalDays: (r.interval_days as number | null) ?? null,
+    location: String(r.location ?? ""),
+    startDate: String(r.start_date),
+    active: Boolean(r.active),
+    notes: String(r.notes ?? ""),
+    updatedAt: String(r.updated_at),
+  };
+}
+
+export async function listMedications(db: D1Database): Promise<Medication[]> {
+  const { results } = await db.prepare("SELECT * FROM medications ORDER BY active DESC, kind, name").all<Row>();
+  return results.map(medicationFromRow);
+}
+
+export async function listMedLogs(db: D1Database, fromDate: string, toDate: string): Promise<MedLog[]> {
+  const { results } = await db
+    .prepare(
+      `SELECT l.*, m.name AS logged_by_name FROM med_logs l LEFT JOIN members m ON m.id = l.logged_by
+       WHERE l.scheduled_date BETWEEN ? AND ? ORDER BY l.scheduled_date, l.scheduled_time`,
+    )
+    .bind(fromDate, toDate)
+    .all<Row>();
+  return results.map((r) => ({
+    id: String(r.id),
+    medicationId: String(r.medication_id),
+    medName: String(r.med_name),
+    scheduledDate: String(r.scheduled_date),
+    scheduledTime: (r.scheduled_time as string | null) ?? null,
+    status: r.status === "dilewati" ? "dilewati" : "diminum",
+    takenAt: String(r.taken_at),
+    note: String(r.note ?? ""),
+    loggedBy: String(r.logged_by),
+    loggedByName: (r.logged_by_name as string | undefined) ?? undefined,
   }));
 }

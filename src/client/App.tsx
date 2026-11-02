@@ -3,20 +3,24 @@ import type { Role } from "../shared/types";
 import { api, getToken, setToken, setUnauthorizedHandler, type Bootstrap } from "./api";
 import { ActionButton, Field, Icon, Segmented, Spinner, requiredError } from "./components/ui";
 import { hasUsableProduct, missingPatientData } from "./completeness";
+import { dailySlots, daysUntil } from "../shared/meds";
+import { localParts } from "../shared/time";
 import { NutritionPage } from "./pages/Nutrition";
 import { PatientPage } from "./pages/Patient";
 import { ProductsPage } from "./pages/Products";
 import { SchedulePage } from "./pages/Schedule";
+import { MedsPage } from "./pages/Meds";
 import { TodayPage } from "./pages/Today";
 import { isIos, isStandalone } from "./push";
 import { AppProvider, useApp } from "./store";
 
-type Tab = "hari" | "nutrisi" | "jadwal" | "produk" | "pasien";
+type Tab = "hari" | "nutrisi" | "jadwal" | "obat" | "produk" | "pasien";
 
 const TABS: { key: Tab; label: string; icon: Parameters<typeof Icon>[0]["name"] }[] = [
   { key: "hari", label: "Hari Ini", icon: "today" },
   { key: "nutrisi", label: "Nutrisi", icon: "chart" },
   { key: "jadwal", label: "Jadwal", icon: "clock" },
+  { key: "obat", label: "Obat", icon: "pill" },
   { key: "produk", label: "Produk", icon: "bottle" },
   { key: "pasien", label: "Pasien", icon: "user" },
 ];
@@ -96,11 +100,18 @@ function Login({ onLogin }: { onLogin: () => void }) {
 
 /** Titik merah di tab yang datanya wajib dilengkapi. */
 function TabBar({ tab, setTab }: { tab: Tab; setTab: (t: Tab) => void }) {
-  const { boot, targets } = useApp();
+  const { boot, targets, day, todayDate } = useApp();
   const needs: Partial<Record<Tab, string>> = {};
   const missing = missingPatientData(boot, targets);
   if (missing.length) needs.pasien = `${missing.length} data wajib belum diisi`;
   if (!hasUsableProduct(boot)) needs.produk = "Belum ada produk dengan kandungan gizi";
+  if (day && day.date === todayDate) {
+    const now = localParts(new Date(), boot.profile.timezone).minutes;
+    const overdue = dailySlots(day.meds, day.medLogs, todayDate, now).filter((s) => s.state === "terlewat").length;
+    const soon = day.meds.some((m) => m.kind === "berkala" && m.nextDate && daysUntil(todayDate, m.nextDate) <= 2);
+    if (overdue) needs.obat = `${overdue} dosis obat terlewat`;
+    else if (soon) needs.obat = "Jadwal obat berkala ≤2 hari lagi";
+  }
   return (
     <nav className="tabbar" aria-label="Menu utama">
       <div className="tabbar-inner">
@@ -126,7 +137,11 @@ export function App() {
   const [boot, setBoot] = useState<Bootstrap | null>(null);
   const [state, setState] = useState<"loading" | "login" | "ready" | "error">(getToken() ? "loading" : "login");
   const [error, setError] = useState("");
-  const [tab, setTab] = useState<Tab>("hari");
+  const [tab, setTab] = useState<Tab>(() => {
+    // Notifikasi obat membuka aplikasi dengan ?tab=obat.
+    const t = new URLSearchParams(location.search).get("tab");
+    return TABS.some((x) => x.key === t) ? (t as Tab) : "hari";
+  });
 
   const logout = useCallback(() => {
     setToken(null);
@@ -179,6 +194,7 @@ export function App() {
         {tab === "hari" && <TodayPage goTo={(t) => setTab(t)} />}
         {tab === "nutrisi" && <NutritionPage />}
         {tab === "jadwal" && <SchedulePage />}
+        {tab === "obat" && <MedsPage />}
         {tab === "produk" && <ProductsPage />}
         {tab === "pasien" && <PatientPage />}
       </main>

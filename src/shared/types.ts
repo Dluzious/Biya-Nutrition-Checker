@@ -206,6 +206,48 @@ export interface PushPrefs {
   activity: boolean;
   /** Target energi/protein harian tercapai. */
   achievements: boolean;
+  /** Jadwal minum obat harian dan pengingat obat berkala. */
+  medications: boolean;
+}
+
+export type MedKind = "harian" | "berkala";
+export type MedStatus = "diminum" | "dilewati";
+
+export interface Medication {
+  id: string;
+  name: string;
+  /** mis. "1 tablet 500 mg" */
+  dose: string;
+  kind: MedKind;
+  /** Harian: jam minum (HH:MM, waktu lokal). */
+  times: string[];
+  /** mis. "sesudah makan" */
+  instructions: string;
+  /** Berkala: tanggal jadwal berikutnya (YYYY-MM-DD). */
+  nextDate: string | null;
+  nextTime: string | null;
+  /** Berkala: jarak antar jadwal (hari), untuk menghitung tanggal berikutnya. */
+  intervalDays: number | null;
+  location: string;
+  /** Tanggal mulai dicatat; dosis sebelum tanggal ini tidak dihitung kepatuhannya. */
+  startDate: string;
+  active: boolean;
+  notes: string;
+  updatedAt: string;
+}
+
+export interface MedLog {
+  id: string;
+  medicationId: string;
+  medName: string;
+  scheduledDate: string;
+  /** Harian: jam jadwalnya; berkala: null. */
+  scheduledTime: string | null;
+  status: MedStatus;
+  takenAt: string;
+  note: string;
+  loggedBy: string;
+  loggedByName?: string;
 }
 
 export interface Evaluation {
