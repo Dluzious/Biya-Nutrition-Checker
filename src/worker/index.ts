@@ -3,7 +3,7 @@ import { intakeFromProduct, sumIntakes } from "../shared/intake";
 import { NUTRIENT_KEYS, formatNutrient, scaleNutrients, type NutrientMap } from "../shared/nutrients";
 import { nextPeriodicDate } from "../shared/meds";
 import { computeTargets } from "../shared/targets";
-import { addDays, isValidTimeZone, localParts } from "../shared/time";
+import { addDays, isValidTimeZone, localParts, zonedToUtc } from "../shared/time";
 import { LAB_FIELDS, RED_FLAGS, type Intake, type IntakeKind, type Member } from "../shared/types";
 import { AiError, estimateDrink, estimateFood, evaluateIntake, modelFor, readLabel, suggestIntake } from "./ai";
 import { checkPassword, clearLoginFailures, issueToken, loginBlocked, recordLoginFailure, verifyToken } from "./auth";
@@ -221,6 +221,14 @@ const medLogSchema = z.object({
   note: text(300).default(""),
   /** Obat berkala: majukan tanggal berikutnya sesuai jarak hari. */
   advance: z.boolean().default(true),
+});
+
+const medLogEditSchema = z.object({
+  status: z.enum(["diminum", "dilewati"]),
+  /** Hanya untuk obat berkala; dosis harian tetap terikat ke jadwalnya. */
+  scheduledDate: dateStr.optional(),
+  takenAt: z.string().datetime().optional(),
+  note: text(300).default(""),
 });
 
 const imageSchema = z.object({
@@ -705,9 +713,70 @@ route("POST", "/api/meds/:id/logs", async ({ env, req, params, me }) => {
   return jsonResponse({ id, nextDate }, 201);
 });
 
+interface MedLogRow {
+  id: string;
+  medication_id: string;
+  scheduled_date: string;
+  scheduled_time: string | null;
+  status: string;
+  taken_at: string;
+}
+
+async function latestDoneDate(db: D1Database, medId: string): Promise<string | null> {
+  const r = await db
+    .prepare("SELECT MAX(scheduled_date) AS d FROM med_logs WHERE medication_id = ? AND status = 'diminum'")
+    .bind(medId)
+    .first<{ d: string | null }>();
+  return r?.d ?? null;
+}
+
+/**
+ * Obat berkala: bila tanggal berikutnya dulu dihitung otomatis dari catatan
+ * "sudah dilakukan" terakhir, hitung ulang setelah catatan itu diubah/dihapus.
+ * Tanggal yang pernah diubah manual dibiarkan.
+ */
+async function resyncNextDate(env: Env, medId: string, before: string | null): Promise<string | null | undefined> {
+  const med = (await listMedications(env.DB)).find((m) => m.id === medId);
+  if (!med || med.kind !== "berkala" || !med.intervalDays || !before) return undefined;
+  if (med.nextDate !== nextPeriodicDate(before, med.intervalDays)) return undefined;
+  const after = await latestDoneDate(env.DB, medId);
+  if (after === before) return undefined;
+  // Tidak ada lagi yang tercatat dilakukan → kembali ke tanggal yang belum terlaksana.
+  const next = after ? nextPeriodicDate(after, med.intervalDays) : before;
+  await env.DB.prepare("UPDATE medications SET next_date = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?").bind(next, medId).run();
+  return next;
+}
+
+route("PUT", "/api/meds/logs/:id", async ({ env, req, params }) => {
+  const data = await body(req, medLogEditSchema);
+  const log = await env.DB.prepare("SELECT * FROM med_logs WHERE id = ?").bind(params.id).first<MedLogRow>();
+  if (!log) throw new HttpError(404, "Catatan obat tidak ditemukan.");
+  const { local, profile } = await today(env);
+  const periodic = log.scheduled_time === null;
+  const scheduledDate = periodic && data.scheduledDate ? data.scheduledDate : log.scheduled_date;
+  if (scheduledDate > local.date) throw new HttpError(400, "Tanggal tidak boleh di masa depan.");
+  let takenAt = data.takenAt ? parseTakenAt(data.takenAt) : new Date(log.taken_at);
+  if (periodic && !data.takenAt && scheduledDate !== log.scheduled_date) {
+    // Pindahkan waktu catatan ke tanggal yang dikoreksi (jam tetap), tidak melewati sekarang.
+    const moved = zonedToUtc(scheduledDate, localParts(takenAt, profile.timezone).time, profile.timezone);
+    takenAt = moved.getTime() > Date.now() ? new Date() : moved;
+  }
+  const before = periodic ? await latestDoneDate(env.DB, log.medication_id) : null;
+  await env.DB.prepare("UPDATE med_logs SET status = ?, scheduled_date = ?, taken_at = ?, note = ? WHERE id = ?")
+    .bind(data.status, scheduledDate, takenAt.toISOString(), data.note, log.id)
+    .run();
+  const nextDate = periodic ? await resyncNextDate(env, log.medication_id, before) : undefined;
+  return jsonResponse({ ok: true, nextDate: nextDate ?? null, nextDateChanged: nextDate !== undefined });
+});
+
 route("DELETE", "/api/meds/logs/:id", async ({ env, params }) => {
-  await env.DB.prepare("DELETE FROM med_logs WHERE id = ?").bind(params.id).run();
-  return jsonResponse({ ok: true });
+  const log = await env.DB.prepare("SELECT * FROM med_logs WHERE id = ?").bind(params.id).first<MedLogRow>();
+  if (!log) return jsonResponse({ ok: true, nextDate: null, nextDateChanged: false });
+  const periodic = log.scheduled_time === null;
+  const before = periodic ? await latestDoneDate(env.DB, log.medication_id) : null;
+  await env.DB.prepare("DELETE FROM med_logs WHERE id = ?").bind(log.id).run();
+  const nextDate = periodic ? await resyncNextDate(env, log.medication_id, before) : undefined;
+  return jsonResponse({ ok: true, nextDate: nextDate ?? null, nextDateChanged: nextDate !== undefined });
 });
 
 // Jadwal & pengingat

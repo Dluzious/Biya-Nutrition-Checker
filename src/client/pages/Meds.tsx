@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { adherence, dailySlots, daysUntil, type DoseSlot } from "../../shared/meds";
 import { weekStart } from "../../shared/progress";
-import { addDays, localParts } from "../../shared/time";
-import type { MedKind, Medication } from "../../shared/types";
+import { addDays, localParts, timeToMinutes, zonedToUtc } from "../../shared/time";
+import type { MedKind, MedLog, MedStatus, Medication } from "../../shared/types";
 import { api, type MedsData } from "../api";
 import { ActionButton, Field, NumberInput, Segmented, Sheet, Spinner, fmtDate, fmtShortDate, fmtTime, rangeError, requiredError } from "../components/ui";
 import { useAction, useApp } from "../store";
@@ -27,9 +27,9 @@ const STATE_LABEL: Record<DoseSlot["state"], { text: string; color: string }> = 
   nanti: { text: "Nanti", color: "var(--muted)" },
 };
 
-function DoseRow({ slot, date, onChange }: { slot: DoseSlot; date: string; onChange: () => Promise<void> }) {
+function DoseRow({ slot, date, onChange, onEdit }: { slot: DoseSlot; date: string; onChange: () => Promise<void>; onEdit: (log: MedLog) => void }) {
   const { boot, run } = useApp();
-  const [busy, setBusy] = useState<null | "diminum" | "dilewati" | "undo">(null);
+  const [busy, setBusy] = useState<null | "diminum" | "dilewati">(null);
   const label = STATE_LABEL[slot.state];
   const act = async (status: "diminum" | "dilewati") => {
     setBusy(status);
@@ -40,15 +40,15 @@ function DoseRow({ slot, date, onChange }: { slot: DoseSlot; date: string; onCha
     await onChange();
     setBusy(null);
   };
-  const undo = async () => {
-    if (!slot.log || !confirm("Batalkan catatan obat ini?")) return;
-    setBusy("undo");
-    await run(() => api(`/api/meds/logs/${slot.log!.id}`, { method: "DELETE" }), "Catatan obat dibatalkan", "Gagal membatalkan");
-    await onChange();
-    setBusy(null);
-  };
+  const log = slot.log;
   return (
-    <li style={{ alignItems: "flex-start" }}>
+    <li
+      className={log ? "intake-row" : undefined}
+      style={{ alignItems: "flex-start" }}
+      onClick={log ? () => onEdit(log) : undefined}
+      role={log ? "button" : undefined}
+      aria-label={log ? `Ubah catatan ${slot.med.name} ${slot.time}` : undefined}
+    >
       <span className="time-badge">{slot.time}</span>
       <div className="grow">
         <div>
@@ -57,14 +57,15 @@ function DoseRow({ slot, date, onChange }: { slot: DoseSlot; date: string; onCha
         {slot.med.instructions && <div className="small muted">{slot.med.instructions}</div>}
         <div className="small" style={{ color: label.color, fontWeight: 600 }}>
           {label.text}
-          {slot.log && (
+          {log && (
             <span className="muted" style={{ fontWeight: 400 }}>
               {" "}
-              · {fmtTime(slot.log.takenAt, boot.profile.timezone)} oleh {slot.log.loggedByName ?? "?"}
+              · {log.status === "diminum" ? `${fmtTime(log.takenAt, boot.profile.timezone)} ` : ""}oleh {log.loggedByName ?? "?"}
             </span>
           )}
         </div>
-        {!slot.log && (
+        {log?.note && <div className="small secondary">📝 {log.note}</div>}
+        {!log && (
           <div className="row" style={{ marginTop: 6 }}>
             <ActionButton
               className="btn primary sm"
@@ -82,12 +83,120 @@ function DoseRow({ slot, date, onChange }: { slot: DoseSlot; date: string; onCha
           </div>
         )}
       </div>
-      {slot.log && (
-        <button className="btn ghost small" aria-label="Batalkan" disabled={busy !== null} onClick={undo}>
-          ✕
-        </button>
-      )}
+      {log && <span className="muted" aria-hidden>✎</span>}
     </li>
+  );
+}
+
+interface LogEditResult {
+  ok: boolean;
+  nextDate: string | null;
+  nextDateChanged: boolean;
+}
+
+/** Ubah atau hapus catatan obat yang sudah masuk. */
+function MedLogSheet({ log, today, onClose }: { log: MedLog; today: string; onClose: () => void }) {
+  const { boot, toast } = useApp();
+  const tz = boot.profile.timezone;
+  const [saving, exec] = useAction();
+  const [removing, execRemove] = useAction();
+  const periodic = log.scheduledTime === null;
+  const initialTime = log.status === "diminum" || !log.scheduledTime ? localParts(new Date(log.takenAt), tz).time : log.scheduledTime;
+  const [status, setStatus] = useState<MedStatus>(log.status);
+  const [time, setTime] = useState(initialTime);
+  const [date, setDate] = useState(log.scheduledDate);
+  const [note, setNote] = useState(log.note);
+
+  // Jam minum dosis harian; dosis malam yang diminum lewat tengah malam jatuh di hari berikutnya.
+  let takenAt: Date | null = null;
+  if (!periodic && status === "diminum" && time) {
+    const nextDay = timeToMinutes(time) < timeToMinutes(log.scheduledTime!) - 12 * 60;
+    takenAt = zonedToUtc(nextDay ? addDays(log.scheduledDate, 1) : log.scheduledDate, time, tz);
+  }
+  const errors = {
+    time:
+      !periodic && status === "diminum"
+        ? requiredError(time, "Isi jam diminum") ?? (takenAt && takenAt.getTime() > Date.now() + 5 * 60_000 ? "Jam ini belum lewat" : null)
+        : null,
+    date: periodic ? requiredError(date, "Isi tanggal") ?? (date > today ? "Tanggal belum lewat" : null) : null,
+  };
+  const valid = !errors.time && !errors.date;
+  const timeChanged = !periodic && status === "diminum" && (time !== initialTime || log.status !== "diminum");
+  const changed = status !== log.status || note !== log.note || (periodic ? date !== log.scheduledDate : timeChanged);
+
+  const done = (res: LogEditResult, base: string) => {
+    toast(res.nextDateChanged && res.nextDate ? `${base} · jadwal berikutnya ${fmtShortDate(res.nextDate)}` : base, "success");
+    onClose();
+  };
+
+  const save = async () => {
+    if (!valid) {
+      toast("Lengkapi data yang ditandai merah dulu.", "error");
+      return;
+    }
+    const res = await exec(() =>
+      api<LogEditResult>(`/api/meds/logs/${log.id}`, {
+        method: "PUT",
+        body: {
+          status,
+          note: note.trim(),
+          ...(periodic ? { scheduledDate: date } : {}),
+          ...(timeChanged && takenAt ? { takenAt: takenAt.toISOString() } : {}),
+        },
+      }),
+    );
+    if (res) done(res, "Catatan obat diperbarui");
+  };
+
+  const remove = async () => {
+    if (!confirm(`Hapus catatan ${log.medName} (${fmtShortDate(log.scheduledDate)}${log.scheduledTime ? ` ${log.scheduledTime}` : ""})?`)) return;
+    const res = await execRemove(() => api<LogEditResult>(`/api/meds/logs/${log.id}`, { method: "DELETE" }), undefined, "Gagal menghapus");
+    if (res) done(res, "Catatan obat dihapus");
+  };
+
+  return (
+    <Sheet title="Ubah catatan obat" onClose={onClose}>
+      <p style={{ marginBottom: 2 }}>
+        <strong>{log.medName}</strong>
+      </p>
+      <p className="small muted">
+        {periodic ? "Obat berkala" : `Jadwal ${fmtDate(log.scheduledDate)} · ${log.scheduledTime}`} · dicatat oleh {log.loggedByName ?? "?"}
+      </p>
+      <Field label="Status">
+        <Segmented<MedStatus>
+          value={status}
+          onChange={setStatus}
+          options={[
+            { value: "diminum", label: periodic ? "✓ Sudah dilakukan" : "✓ Diminum" },
+            { value: "dilewati", label: "Dilewati" },
+          ]}
+        />
+      </Field>
+      {periodic ? (
+        <Field label="Tanggal dilakukan" required error={errors.date}>
+          <input type="date" value={date} max={today} onChange={(e) => setDate(e.target.value)} />
+        </Field>
+      ) : (
+        status === "diminum" && (
+          <Field label="Jam diminum" required error={errors.time} hint="Jam sebenarnya obat diminum.">
+            <input type="time" value={time} onChange={(e) => setTime(e.target.value)} />
+          </Field>
+        )
+      )}
+      <Field label="Catatan">
+        <textarea value={note} placeholder="mis. diminum setelah makan, muntah 10 menit kemudian" onChange={(e) => setNote(e.target.value)} />
+      </Field>
+      {periodic && <p className="tiny muted">Bila ini catatan terakhir, tanggal jadwal berikutnya ikut disesuaikan otomatis.</p>}
+      {!valid && <p className="field-error">Lengkapi data yang ditandai merah.</p>}
+      <div className="row" style={{ marginTop: 8 }}>
+        <ActionButton className="btn primary grow" busy={saving} attention={changed && valid} disabled={!changed || removing} onClick={save}>
+          Simpan perubahan
+        </ActionButton>
+        <ActionButton className="btn danger" busy={removing} busyText="Menghapus…" disabled={saving} onClick={remove}>
+          Hapus
+        </ActionButton>
+      </div>
+    </Sheet>
   );
 }
 
@@ -313,17 +422,29 @@ function MedSheet({ initial, onClose }: { initial: Draft; onClose: () => void })
   );
 }
 
-function AdherenceHistory({ data, today, nowMinutes }: { data: MedsData; today: string; nowMinutes: number }) {
+function AdherenceHistory({
+  data,
+  today,
+  nowMinutes,
+  onEditLog,
+  onPickDate,
+}: {
+  data: MedsData;
+  today: string;
+  nowMinutes: number;
+  onEditLog: (log: MedLog) => void;
+  onPickDate: (date: string) => void;
+}) {
   const [mode, setMode] = useState<"harian" | "mingguan" | "bulanan">("harian");
   const daily = data.medications.filter((m) => m.kind === "harian");
   const periodicLogs = data.logs.filter((l) => l.scheduledTime === null).reverse();
   if (!daily.length && !periodicLogs.length) return null;
 
-  const rows: { label: string; a: ReturnType<typeof adherence> }[] = [];
+  const rows: { label: string; a: ReturnType<typeof adherence>; date?: string }[] = [];
   if (mode === "harian") {
     for (let i = 0; i < 7; i++) {
       const d = addDays(today, -i);
-      rows.push({ label: i === 0 ? "Hari ini" : fmtDate(d), a: adherence(daily, data.logs, d, d, today, nowMinutes) });
+      rows.push({ label: i === 0 ? "Hari ini" : fmtDate(d, false), a: adherence(daily, data.logs, d, d, today, nowMinutes), date: d });
     }
   } else if (mode === "mingguan") {
     for (let i = 0; i < 8; i++) {
@@ -383,9 +504,12 @@ function AdherenceHistory({ data, today, nowMinutes }: { data: MedsData; today: 
               </tr>
             </thead>
             <tbody>
-              {rows.map(({ label, a }) => (
-                <tr key={label}>
-                  <td>{label}</td>
+              {rows.map(({ label, a, date }) => (
+                <tr key={label} className={date ? "intake-row" : undefined} onClick={date ? () => onPickDate(date) : undefined}>
+                  <td>
+                    {label}
+                    {date && <span className="muted">{"\u00a0"}›</span>}
+                  </td>
                   <td>
                     {a.taken}/{a.due}
                   </td>
@@ -397,6 +521,7 @@ function AdherenceHistory({ data, today, nowMinutes }: { data: MedsData; today: 
           </table>
           <p className="tiny muted" style={{ marginTop: 6 }}>
             Obat harian saja. "Terlewat" = dosis yang sudah lewat waktunya tanpa catatan; "Lewati" yang disengaja tidak dihitung terlewat.
+            {mode === "harian" && " Ketuk tanggal untuk membuka & mengubah catatan dosisnya."}
           </p>
         </>
       )}
@@ -405,14 +530,16 @@ function AdherenceHistory({ data, today, nowMinutes }: { data: MedsData; today: 
           <h3>Riwayat obat berkala</h3>
           <ul className="list small">
             {periodicLogs.slice(0, 12).map((l) => (
-              <li key={l.id}>
+              <li key={l.id} className="intake-row" role="button" onClick={() => onEditLog(l)}>
                 <span className="grow">
                   {fmtDate(l.scheduledDate)} — <strong>{l.medName}</strong>
+                  {l.note && <span className="secondary"> · {l.note}</span>}
                 </span>
-                <span className="muted">{l.status === "diminum" ? "✓ dilakukan" : "dilewati"}</span>
+                <span className="muted">{l.status === "diminum" ? "✓ dilakukan" : "dilewati"} ✎</span>
               </li>
             ))}
           </ul>
+          <p className="tiny muted">Ketuk catatan untuk mengubah tanggal, status, atau menghapusnya.</p>
         </>
       )}
     </div>
@@ -425,6 +552,7 @@ export function MedsPage() {
   const [data, setData] = useState<MedsData | null>(null);
   const [date, setDate] = useState(todayDate);
   const [editing, setEditing] = useState<Draft | null>(null);
+  const [editingLog, setEditingLog] = useState<MedLog | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -484,7 +612,7 @@ export function MedsPage() {
       )}
 
       {data.medications.some((m) => m.kind === "harian") && (
-        <div className="card">
+        <div className="card" id="obat-harian">
           <div className="card-header">
             <h2>Obat harian</h2>
             <span className="small muted">
@@ -505,11 +633,12 @@ export function MedsPage() {
           ) : (
             <ul className="list">
               {slots.map((s) => (
-                <DoseRow key={`${s.med.id}-${s.time}`} slot={s} date={date} onChange={afterChange} />
+                <DoseRow key={`${s.med.id}-${s.time}`} slot={s} date={date} onChange={afterChange} onEdit={setEditingLog} />
               ))}
             </ul>
           )}
           <p className="tiny muted" style={{ marginTop: 6 }}>
+            {slots.some((s) => s.log) && "Ketuk dosis yang sudah dicatat untuk mengubah jam, status, atau catatannya. "}
             Notifikasi dikirim tepat di jam minum; pendamping diberi tahu bila {boot.profile.missedAlertMinutes} menit kemudian belum tercatat.
           </p>
         </div>
@@ -524,7 +653,16 @@ export function MedsPage() {
         </>
       )}
 
-      <AdherenceHistory data={data} today={todayDate} nowMinutes={nowMinutes} />
+      <AdherenceHistory
+        data={data}
+        today={todayDate}
+        nowMinutes={nowMinutes}
+        onEditLog={setEditingLog}
+        onPickDate={(d) => {
+          setDate(d);
+          document.getElementById("obat-harian")?.scrollIntoView({ behavior: "smooth", block: "start" });
+        }}
+      />
 
       {data.medications.filter((m) => m.active).length > 0 && (
         <div className="card">
@@ -566,6 +704,17 @@ export function MedsPage() {
       <p className="tiny muted" style={{ textAlign: "center", margin: "12px 8px" }}>
         Aplikasi hanya mengingatkan & mencatat. Dosis dan jadwal obat mengikuti resep dokter.
       </p>
+
+      {editingLog && (
+        <MedLogSheet
+          log={editingLog}
+          today={todayDate}
+          onClose={() => {
+            setEditingLog(null);
+            afterChange();
+          }}
+        />
+      )}
 
       {editing && (
         <MedSheet
